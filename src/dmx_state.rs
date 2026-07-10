@@ -20,11 +20,11 @@ impl Default for DmxParams {
     fn default() -> Self {
         Self {
             r: 255,
-            g: 255,
-            b: 255,
-            base_effect_id: 1, // Default base: 4th July Wheel
-            top_effect_id: 0,  // Default top: None
-            speed: 5,
+            g: 0,
+            b: 0,
+            base_effect_id: 8,
+            top_effect_id: 0,
+            speed: 4,
             r2: 0,
             g2: 0,
             b2: 0,

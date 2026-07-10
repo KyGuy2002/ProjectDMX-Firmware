@@ -16,9 +16,14 @@ use embassy_rp::gpio::{Level, Output};
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::{PIO0, UART1};
 use embassy_rp::pio::{InterruptHandler, Pio};
-use embassy_rp::pio_programs::ws2812::{Grb, PioWs2812, PioWs2812Program};
-use smart_leds::RGB8;
+use embassy_rp::pio_programs::ws2812::{Rgb, Rgbw, Grb, Grbw, PioWs2812, RgbwPioWs2812, PioWs2812Program};
+use smart_leds::{RGB8, RGBW, White};
 use static_cell::StaticCell;
+
+enum ActiveDriver<'d> {
+    Rgb(PioWs2812<'d, PIO0, 0, NUM_LEDS, Rgb>),
+    Rgbw(RgbwPioWs2812<'d, PIO0, 0, NUM_LEDS, Grbw>),
+}
 
 use embassy_rp::uart::{
     Async, Config as UartConfig, DataBits, Parity, StopBits, Uart, UartRx,
@@ -26,6 +31,12 @@ use embassy_rp::uart::{
 
 use config::{get_layout_map, PixelMeta, NUM_LEDS};
 use dmx_state::{DmxParams, DMX_SIGNAL};
+
+// ==========================================
+// CONFIGURATION FLAG
+// ==========================================
+const IS_RGBW: bool = true; // Set to true for RGBW strips, false for RGB strips
+// ==========================================
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -42,6 +53,12 @@ enum TransitionState {
     },
 }
 
+/// Dynamic dual-buffer storage wrapping the two potential pixel types
+enum LedBuffer {
+    Rgb([RGB8; NUM_LEDS]),
+    Rgbw([RGBW<u8>; NUM_LEDS]),
+}
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     // 1. Create a default hardware config
@@ -51,7 +68,6 @@ async fn main(spawner: Spawner) {
     config.clocks = embassy_rp::clocks::ClockConfig::system_freq(125_000_000).unwrap();     
     // 3. Initialize the RP2350 with the custom config
     let p = embassy_rp::init(config);
-    // let p = embassy_rp::init(Default::default());
 
     // RS-485 transceiver enable, active-low.
     let _rs485_enable = Output::new(p.PIN_23, Level::Low);
@@ -82,18 +98,34 @@ async fn main(spawner: Spawner) {
     static PROGRAM: StaticCell<PioWs2812Program<PIO0>> = StaticCell::new();
     let program = PROGRAM.init(PioWs2812Program::new(&mut common));
 
-    let mut ws2812 = PioWs2812::<PIO0, 0, NUM_LEDS, Grb>::new(
-        &mut common,
-        sm0,
-        p.DMA_CH0,
-        p.PIN_15,
-        program,
-    );
-
     // Global pre-calculated coordinate space mapping allocation
     let layout_table: [PixelMeta; NUM_LEDS] = get_layout_map();
 
-    let mut leds_output = [RGB8::default(); NUM_LEDS];
+    // Initialize ONLY the driver needed, consuming the peripherals exactly once
+    let mut led_driver = if !IS_RGBW {
+        ActiveDriver::Rgb(PioWs2812::<PIO0, 0, NUM_LEDS, Rgb>::with_color_order(
+            &mut common,
+            sm0,
+            p.DMA_CH0,
+            p.PIN_15,
+            program,
+        ))
+    } else {
+        ActiveDriver::Rgbw(RgbwPioWs2812::<PIO0, 0, NUM_LEDS, Grbw>::with_color_order(
+            &mut common,
+            sm0,
+            p.DMA_CH0,
+            p.PIN_15,
+            program,
+        ))
+    };
+
+    // Initialize our safe buffer matching our active configuration
+    let mut leds_output = if IS_RGBW {
+        LedBuffer::Rgbw([RGBW::<u8>::default(); NUM_LEDS])
+    } else {
+        LedBuffer::Rgb([RGB8::default(); NUM_LEDS])
+    };
 
     let mut active_params = DmxParams::default();
     let mut transition = TransitionState::Stable;
@@ -117,7 +149,6 @@ async fn main(spawner: Spawner) {
                 };
             }
             active_params = new_dmx;
-            // println!("DMX Update: {:?}", active_params);
         }
 
         // Apply speed increments only if we aren't using the slider as a static index pointer (debug mode 255)
@@ -136,14 +167,30 @@ async fn main(spawner: Spawner) {
                     let base_color = neo_effects::render_base_effect(active_params.base_effect_id, base_offset, &active_params, meta);
                     let mixed_color = neo_effects::apply_top_effect(active_params.top_effect_id, top_offset, base_color, meta, &active_params);
 
-                    if master_intensity > 0 {
-                        leds_output[i] = RGB8 {
-                            r: ((mixed_color.r as u32 * master_intensity) / 255) as u8,
-                            g: ((mixed_color.g as u32 * master_intensity) / 255) as u8,
-                            b: ((mixed_color.b as u32 * master_intensity) / 255) as u8,
-                        };
-                    } else {
-                        leds_output[i] = RGB8::default();
+                    match &mut leds_output {
+                        LedBuffer::Rgb(buf) => {
+                            if master_intensity > 0 {
+                                buf[i] = RGB8 {
+                                    r: ((mixed_color.r as u32 * master_intensity) / 255) as u8,
+                                    g: ((mixed_color.g as u32 * master_intensity) / 255) as u8,
+                                    b: ((mixed_color.b as u32 * master_intensity) / 255) as u8,
+                                };
+                            } else {
+                                buf[i] = RGB8::default();
+                            }
+                        }
+                        LedBuffer::Rgbw(buf) => {
+                            if master_intensity > 0 {
+                                buf[i] = RGBW {
+                                    r: ((mixed_color.r as u32 * master_intensity) / 255) as u8,
+                                    g: ((mixed_color.g as u32 * master_intensity) / 255) as u8,
+                                    b: ((mixed_color.b as u32 * master_intensity) / 255) as u8,
+                                    a: White(0), // Hardcoded 0 White element since effects engine is 3-channel
+                                };
+                            } else {
+                                buf[i] = RGBW::default();
+                            }
+                        }
                     }
                 }
             }
@@ -167,14 +214,30 @@ async fn main(spawner: Spawner) {
 
                     let mixed_color = neo_effects::blend_rgb(old_composite, new_composite, alpha);
 
-                    if master_intensity > 0 {
-                        leds_output[i] = RGB8 {
-                            r: ((mixed_color.r as u32 * master_intensity) / 255) as u8,
-                            g: ((mixed_color.g as u32 * master_intensity) / 255) as u8,
-                            b: ((mixed_color.b as u32 * master_intensity) / 255) as u8,
-                        };
-                    } else {
-                        leds_output[i] = RGB8::default();
+                    match &mut leds_output {
+                        LedBuffer::Rgb(buf) => {
+                            if master_intensity > 0 {
+                                buf[i] = RGB8 {
+                                    r: ((mixed_color.r as u32 * master_intensity) / 255) as u8,
+                                    g: ((mixed_color.g as u32 * master_intensity) / 255) as u8,
+                                    b: ((mixed_color.b as u32 * master_intensity) / 255) as u8,
+                                };
+                            } else {
+                                buf[i] = RGB8::default();
+                            }
+                        }
+                        LedBuffer::Rgbw(buf) => {
+                            if master_intensity > 0 {
+                                buf[i] = RGBW {
+                                    r: ((mixed_color.r as u32 * master_intensity) / 255) as u8,
+                                    g: ((mixed_color.g as u32 * master_intensity) / 255) as u8,
+                                    b: ((mixed_color.b as u32 * master_intensity) / 255) as u8,
+                                    a: White(0), // Hardcoded 0 White element since effects engine is 3-channel
+                                };
+                            } else {
+                                buf[i] = RGBW::default();
+                            }
+                        }
                     }
                 }
 
@@ -184,8 +247,20 @@ async fn main(spawner: Spawner) {
             }
         }
 
-        // Stream frame via DMA to PIO
-        ws2812.write(&leds_output).await;
+        // Stream frame via DMA using whichever driver flavor is active
+        match &mut led_driver {
+            ActiveDriver::Rgb(driver) => {
+                if let LedBuffer::Rgb(buf) = &leds_output {
+                    driver.write(buf).await;
+                }
+            }
+            ActiveDriver::Rgbw(driver) => {
+                if let LedBuffer::Rgbw(buf) = &leds_output {
+                    driver.write(buf).await;
+                }
+            }
+        }
+        
         ticker.next().await;
     }
 }
@@ -196,10 +271,8 @@ async fn dmx_rx_task(mut rx: UartRx<'static, Async>) {
     loop {
         match rx.read(&mut frame).await {
             Ok(_) => {
-
                 const START_CH: usize = 97;
 
-                // Map your console channels directly onto DMX structural fields
                 let extracted = DmxParams {
                     r: frame[START_CH + 0],
                     g: frame[START_CH + 1],

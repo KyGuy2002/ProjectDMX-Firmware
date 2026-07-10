@@ -107,76 +107,7 @@ impl SegmentRule {
 const CONFIG_SEGMENTS: &[SegmentRule] = &[
 
 
-    // --- USA (Left Side of layout) ---
-
-    // ----- Letter: U (top left to bottom to top right order)
-    SegmentRule::line(8, 2, 0, 0,6, 0, 0), // Top left flat 2
-    SegmentRule::line(10, 6, 0, 3,3, 30, 255-30), // Vertical left 6
-    SegmentRule::line(16, 3, 0, 6,12, 255, 255), // Bottom flat 3
-    SegmentRule::line(19, 6, 0, 15,15, 255-30, 30), // Vertical right 6
-    SegmentRule::line(25, 2, 0, 12,18, 0, 0), // Top right flat 2
-
-    // ----- Letter: S (bottom left to top right order)
-    SegmentRule::single_pixel(41, 1, 22, 255-50),
-    SegmentRule::single_pixel(42, 1, 25, 255-25),
-    SegmentRule::line(43, 2, 1, 28, 31, 255, 255), // Bottom flat 2
-    SegmentRule::single_pixel(45, 1, 34, 255-25),
-    SegmentRule::line(46, 2, 1, 37, 37, 255-50, 255-75), // Vertical right 2
-    SegmentRule::single_pixel(48, 1, 34, 255-100),
-    SegmentRule::line(49, 2, 1, 28, 31, 255-125, 255-125), // Middle flat 2
-    SegmentRule::single_pixel(51, 1, 25, 255-150),
-    SegmentRule::line(52, 2, 1, 22, 22, 255-175, 255-200), // Vertical left 2
-    SegmentRule::single_pixel(54, 1, 25, 25),
-    SegmentRule::line(55, 2, 1, 28, 31, 0, 0), // Top flat 2
-    SegmentRule::single_pixel(57, 1, 34, 25),
-    SegmentRule::single_pixel(58, 1, 37, 50),
-
-
-    // ----- Letter: A (bottom left to top to bottom right order)
-    SegmentRule::line(72, 2, 2, 44, 48, 255, 255), // Bottom left flat 2
-    SegmentRule::diagonal(74, 6, 2, 46, 180, 51, 30), // Left diag
-    SegmentRule::line(80, 3, 2, 49, 53, 0, 0), // Top flat 3
-    SegmentRule::diagonal(83, 4, 2, 55, 30, 58, 120), // Right diag (top half)
-    // Skip middle flat section in wire - come back later
-    SegmentRule::diagonal(90, 2, 2, 59, 150, 60, 255-30), // Right diag (bottom half)
-    SegmentRule::line(87, 2, 2, 50, 52, 160, 160), // Middle flat
-    // Skip single pixel (blank for wire length out of middle flat)
-    SegmentRule::line(92, 2, 2, 58, 62, 255, 255), // Bottom right flat 2
-
-
-
-    // --- 250 Section (Right Side of layout) ---
-
-    // ----- Letter: 2 (top left to bottom right order)
-    SegmentRule::single_pixel(108, 3, 170, 50),
-    SegmentRule::single_pixel(109, 3, 173, 25),
-    SegmentRule::line(110, 3, 3, 176, 185, 0, 0), // Top flat 3
-    SegmentRule::single_pixel(113, 3, 188, 25),
-    SegmentRule::single_pixel(114, 3, 191, 50),
-    SegmentRule::diagonal(115, 7, 3, 191, 75, 170, 255), // Center diag
-    SegmentRule::line(122, 4, 3, 174, 191, 255, 255), // Bottom flat
-
-    // ----- Letter: 5 (bottom left to top right order)
-    SegmentRule::single_pixel(143, 4, 192, 255-50),
-    SegmentRule::single_pixel(144, 4, 195, 255-25),
-    SegmentRule::line(145, 2, 4, 198, 201, 255, 255), // Bottom flat 2
-    SegmentRule::single_pixel(147, 4, 204, 255-25),
-    SegmentRule::line(148, 3, 4, 207, 207, 255-50, 255-100), // Vertical right 3
-    SegmentRule::single_pixel(151, 4, 204, 255-125),
-    SegmentRule::line(152, 2, 4, 201, 198, 255-150, 255-150), // Middle flat 2
-    SegmentRule::single_pixel(154, 4, 195, 255-175),
-    SegmentRule::line(155, 2, 4, 192, 192, 50, 25), // Vertical left 2 (not incl top pixel)
-    SegmentRule::line(157, 5, 4, 192, 214, 0, 0), // Top flat 5
-
-    // ----- Letter: 0 (clockwise - string starts topleft - code below starts with bottom of leftmost vertical line)
-    SegmentRule::line(191, 4, 5, 215, 215, 255-60, 60), // Left vertical 4
-    SegmentRule::single_pixel(177, 5, 217, 30),
-    SegmentRule::line(178, 3, 5, 219, 227, 0, 0), // Top flat 3
-    SegmentRule::single_pixel(181, 5, 232, 30),
-    SegmentRule::line(182, 4, 5, 236, 236, 60, 255-60), // Right vertical 4
-    SegmentRule::single_pixel(186, 5, 232, 255-30),
-    SegmentRule::line(187, 3, 5, 227, 219, 255, 255), // Bottom flat 3
-    SegmentRule::single_pixel(190, 5, 217, 255-30),
+    SegmentRule::line(0, 400, 0, 0,0, 0, 0), // Top left flat 2
 
 
 ];

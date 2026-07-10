@@ -118,6 +118,31 @@ pub fn render_base_effect(
             }
         }
 
+        // 8: Electrical Pulse Wave (Pulse Color = Color1, Background = Color2)
+        8 => {
+            // --- ADJUSTABLE TUNING VARIABLES ---
+            let pulse_count = 3;   // Number of electrical pulses visible across the entire sign at once
+            let pulse_width = 8;   // Total width of each pulse measured in pixels
+            let NUM_LEDS = 100;
+            let speed_slowdown = 3;  // Higher = Slower pulse speed. (1 = default, 3 = three times slower)
+            // -----------------------------------
+
+            // 1. Slow down the incoming frame tick safely using a bit-shift
+            let slow_offset = (offset >> speed_slowdown) as u16;
+
+            // 2. Continuous movement phase tracking
+            let spacing = (NUM_LEDS / pulse_count) as u16;
+            let pixel_pos = (meta.index as u16).wrapping_add(slow_offset);
+            let cycle_position = pixel_pos % spacing;
+
+            // 3. Draw either the moving blob or the background color
+            if cycle_position < pulse_width as u16 {
+                color1 // Blob color
+            } else {
+                color2 // Wire background color
+            }
+        }
+
         // 255: Diagnostic Mode - Light a single pixel by raw index using the speed channel value
         255 => {
             // Use the speed parameter directly as the target pixel index
