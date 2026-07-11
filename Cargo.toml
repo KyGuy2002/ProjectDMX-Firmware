@@ -23,6 +23,8 @@ embassy-rp = { version = "0.9", features = ["rt", "rp235xb", "time-driver", "bin
 embassy-time = { version = "0.5" }
 embassy-sync = { version = "0.7" }
 embassy-futures = { version = "0.1" }
+embassy-net = { version = "0.9", features = ["tcp", "dhcpv4", "medium-ethernet", "defmt"] }
+embassy-net-wiznet = { version = "0.3", features = ["defmt"] }
 
 # Embedded basics
 cortex-m = { version = "0.7", features = ["inline-asm"] }
