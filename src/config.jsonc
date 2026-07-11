@@ -1,6 +1,6 @@
 {
     "input": {
-        "source": "dmx"
+        "source": "artnet"
     },
     "dmx_output": {
         "universe": 0

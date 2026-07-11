@@ -1,21 +1,64 @@
 use embassy_rp::gpio::AnyPin;
 use embassy_rp::peripherals::{
     DMA_CH1, DMA_CH2, DMA_CH3, DMA_CH4,
+    PIN_2, PIN_3, PIN_4, PIN_5, PIN_6, PIN_7, PIN_8, PIN_9,
     PIN_10, PIN_11, PIN_12, PIN_13,
-    PIN_24, PIN_25,
+    PIN_14, PIN_15, PIN_16, PIN_17, PIN_18, PIN_19,
+    PIN_24, PIN_25, PIN_40, PIN_41,
+    PWM_SLICE1, PWM_SLICE2, PWM_SLICE4, PWM_SLICE7,
     SPI1, UART1,
 };
-use embassy_rp::Peri;
+use embassy_rp::pwm::{Config as PwmConfig, Pwm};
+use embassy_rp::{Peri, PeripheralType};
 
-/// Holds the 4 hardware pins belonging to a modular PCB slot.
-pub struct SlotPins {
-    pub pin1: Peri<'static, AnyPin>,
-    pub pin2: Peri<'static, AnyPin>,
-    pub pin3: Peri<'static, AnyPin>,
-    pub pin4: Peri<'static, AnyPin>,
+pub struct SlotPins<P1, P2, P3, P4, PWM>
+where
+    P1: PeripheralType + 'static,
+    P2: PeripheralType + 'static,
+    P3: PeripheralType + 'static,
+    P4: PeripheralType + 'static,
+    PWM: PeripheralType + 'static,
+{
+    pub pin1: Peri<'static, P1>,
+    pub pin2: Peri<'static, P2>,
+    pub pin3: Peri<'static, P3>,
+    pub pin4: Peri<'static, P4>,
+    pub pin1_pwm: Peri<'static, PWM>,
 }
 
-/// Dedicated SPI Pin mapping for the SD Card.
+pub type SlotA = SlotPins<PIN_4, PIN_3, PIN_2, PIN_40, PWM_SLICE2>;
+pub type SlotB = SlotPins<PIN_8, PIN_6, PIN_5, PIN_41, PWM_SLICE4>;
+pub type SlotC = SlotPins<PIN_15, PIN_14, PIN_9, PIN_7, PWM_SLICE7>;
+pub type SlotD = SlotPins<PIN_19, PIN_18, PIN_17, PIN_16, PWM_SLICE1>;
+
+pub trait SlotPwm {
+    fn into_pwm(self, cfg: PwmConfig) -> Pwm<'static>;
+}
+
+impl SlotPwm for SlotA {
+    fn into_pwm(self, cfg: PwmConfig) -> Pwm<'static> {
+        Pwm::new_output_a(self.pin1_pwm, self.pin1, cfg)
+    }
+}
+
+impl SlotPwm for SlotB {
+    fn into_pwm(self, cfg: PwmConfig) -> Pwm<'static> {
+        Pwm::new_output_a(self.pin1_pwm, self.pin1, cfg)
+    }
+}
+
+impl SlotPwm for SlotC {
+    fn into_pwm(self, cfg: PwmConfig) -> Pwm<'static> {
+        Pwm::new_output_b(self.pin1_pwm, self.pin1, cfg)
+    }
+}
+
+impl SlotPwm for SlotD {
+    fn into_pwm(self, cfg: PwmConfig) -> Pwm<'static> {
+        Pwm::new_output_b(self.pin1_pwm, self.pin1, cfg)
+    }
+}
+
 pub struct SdCardPins {
     pub sck: Peri<'static, AnyPin>,
     pub mosi: Peri<'static, AnyPin>,
@@ -23,7 +66,6 @@ pub struct SdCardPins {
     pub cs: Peri<'static, AnyPin>,
 }
 
-/// Physical buttons mapped on the board.
 pub struct ButtonPins {
     pub menu: Peri<'static, AnyPin>,
     pub down: Peri<'static, AnyPin>,
@@ -31,7 +73,6 @@ pub struct ButtonPins {
     pub enter: Peri<'static, AnyPin>,
 }
 
-/// Dedicated SPI Pin mapping for the Ethernet Controller.
 pub struct EthernetPins {
     pub sck: Peri<'static, PIN_10>,
     pub mosi: Peri<'static, PIN_11>,
@@ -39,38 +80,27 @@ pub struct EthernetPins {
     pub cs: Peri<'static, PIN_13>,
 }
 
-/// Dedicated I2C Pin mapping for the OLED Screen.
 pub struct OledPins {
     pub sda: Peri<'static, AnyPin>,
     pub scl: Peri<'static, AnyPin>,
 }
 
-/// Dedicated RS485 / DMX Interface Pin mapping.
-///
-/// UART TX/RX are not stored here because Embassy UART needs concrete pin types.
-/// DMX TX = PIN_24
-/// DMX RX = PIN_25
 pub struct DmxPins {
     pub mode: Peri<'static, AnyPin>,
 }
 
-/// Dedicated Inter-IC Sound Audio Interface Pin mapping.
 pub struct AudioPins {
     pub din: Peri<'static, AnyPin>,
     pub bck: Peri<'static, AnyPin>,
     pub lck: Peri<'static, AnyPin>,
 }
 
-/// Loose extra pins left over on the board schematic.
-///
-/// PIN_27 is not listed here because it is used as OLED SCL.
 pub struct UnusedPins {
     pub pin1: Peri<'static, AnyPin>,
     pub pin2: Peri<'static, AnyPin>,
     pub pin3: Peri<'static, AnyPin>,
 }
 
-/// Inputs 1 through 6 mapped on the board.
 pub struct InputPins {
     pub input1: Peri<'static, AnyPin>,
     pub input2: Peri<'static, AnyPin>,
@@ -80,7 +110,6 @@ pub struct InputPins {
     pub input6: Peri<'static, AnyPin>,
 }
 
-/// The master physical hardware mapping representation of your complete PCB layout.
 pub struct PcbLayout {
     pub sd_card: SdCardPins,
     pub buttons: ButtonPins,
@@ -89,10 +118,10 @@ pub struct PcbLayout {
     pub dmx: DmxPins,
     pub audio: AudioPins,
     pub unused: UnusedPins,
-    pub slot_a: SlotPins,
-    pub slot_b: SlotPins,
-    pub slot_c: SlotPins,
-    pub slot_d: SlotPins,
+    pub slot_a: SlotA,
+    pub slot_b: SlotB,
+    pub slot_c: SlotC,
+    pub slot_d: SlotD,
     pub digital_inputs: InputPins,
 }
 
@@ -155,31 +184,35 @@ impl PcbLayout {
                 },
 
                 slot_a: SlotPins {
-                    pin1: p.PIN_4.into(),
-                    pin2: p.PIN_3.into(),
-                    pin3: p.PIN_2.into(),
-                    pin4: p.PIN_40.into(),
+                    pin1: p.PIN_4,
+                    pin2: p.PIN_3,
+                    pin3: p.PIN_2,
+                    pin4: p.PIN_40,
+                    pin1_pwm: p.PWM_SLICE2,
                 },
 
                 slot_b: SlotPins {
-                    pin1: p.PIN_8.into(),
-                    pin2: p.PIN_6.into(),
-                    pin3: p.PIN_5.into(),
-                    pin4: p.PIN_41.into(),
+                    pin1: p.PIN_8,
+                    pin2: p.PIN_6,
+                    pin3: p.PIN_5,
+                    pin4: p.PIN_41,
+                    pin1_pwm: p.PWM_SLICE4,
                 },
 
                 slot_c: SlotPins {
-                    pin1: p.PIN_15.into(),
-                    pin2: p.PIN_14.into(),
-                    pin3: p.PIN_9.into(),
-                    pin4: p.PIN_7.into(),
+                    pin1: p.PIN_15,
+                    pin2: p.PIN_14,
+                    pin3: p.PIN_9,
+                    pin4: p.PIN_7,
+                    pin1_pwm: p.PWM_SLICE7,
                 },
 
                 slot_d: SlotPins {
-                    pin1: p.PIN_19.into(),
-                    pin2: p.PIN_18.into(),
-                    pin3: p.PIN_17.into(),
-                    pin4: p.PIN_16.into(),
+                    pin1: p.PIN_19,
+                    pin2: p.PIN_18,
+                    pin3: p.PIN_17,
+                    pin4: p.PIN_16,
+                    pin1_pwm: p.PWM_SLICE1,
                 },
 
                 digital_inputs: InputPins {

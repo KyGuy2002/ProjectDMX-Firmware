@@ -1,27 +1,30 @@
 use embassy_executor::Spawner;
 
 use crate::config::*;
-use crate::hardware::SlotPins;
+use crate::hardware::SlotPwm;
 
-mod dimmer;
+pub mod dimmer;
 
-pub fn init_slot(spawner: &Spawner, slot_config: ModuleSlot, pins: SlotPins) {
+pub fn init_slot<S>(
+    spawner: &Spawner,
+    slot_config: ModuleSlot,
+    slot: S,
+) where
+    S: SlotPwm + 'static,
+{
     match slot_config {
-        ModuleSlot::Neo(settings) => {
-            // spawner.spawn(neopixel_driver_task(settings, pins)).unwrap();
-        }
         ModuleSlot::Dimmer(settings) => {
-            spawner.spawn(dimmer::dimmer_task(settings, pins)).unwrap();
+            dimmer::spawn_dimmer(spawner, settings, slot);
         }
-        ModuleSlot::FogMachine(settings) => {
-            // spawner.spawn(fog_machine_task(settings, pins)).unwrap();
-        }
-        ModuleSlot::AudioAmp(settings) => {
-            // spawner.spawn(audio_amp_task(settings, pins)).unwrap();
-        }
-        ModuleSlot::Rfid(settings) => {
-            // spawner.spawn(rfid_task(settings, pins)).unwrap();
-        }
+
+        ModuleSlot::Neo(_settings) => {}
+
+        ModuleSlot::FogMachine(_settings) => {}
+
+        ModuleSlot::AudioAmp(_settings) => {}
+
+        ModuleSlot::Rfid(_settings) => {}
+
         ModuleSlot::Disabled { .. } => {}
     }
 }

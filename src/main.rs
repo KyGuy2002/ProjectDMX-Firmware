@@ -10,6 +10,7 @@ mod hardware;
 mod modules;
 
 mod periphs {
+    pub mod artnet;
     pub mod dmx;
     pub mod eth;
 }
@@ -26,10 +27,8 @@ use config::{load_config, BoardInstanceConfig};
 use hardware::PcbLayout;
 use modules::init_slot;
 
-// Global config
 pub static CONFIG: OnceLock<BoardInstanceConfig> = OnceLock::new();
 
-// Global DMX buffer
 pub const MAX_UNIVERSES: usize = 4;
 
 pub static DMX_MATRIX: Mutex<CriticalSectionRawMutex, RefCell<[[u8; 512]; MAX_UNIVERSES]>> =
@@ -37,28 +36,34 @@ pub static DMX_MATRIX: Mutex<CriticalSectionRawMutex, RefCell<[[u8; 512]; MAX_UN
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    info!("=======================================");
-    info!("");
-    info!("     ProjectDMX Controller Booting     ");
-    info!("              Version 0.1r             ");
-    info!("");
+    info!("ProjectDMX Controller Booting");
 
-    // Embassy init
     let hardware_config = embassy_rp::config::Config::default();
     let p = embassy_rp::init(hardware_config);
 
-    // Split hardware into board layout plus concrete DMX UART pieces
-    let (pcb, uart1, dmx_tx_pin, dmx_rx_pin, dma_ch1, dma_ch2, spi1, dma_ch3, dma_ch4) = PcbLayout::new(p);
+    let (pcb, uart1, dmx_tx_pin, dmx_rx_pin, dma_ch1, dma_ch2, spi1, dma_ch3, dma_ch4) =
+        PcbLayout::new(p);
 
-    // JSONC Configuration
     let config = load_config();
     CONFIG.init(config).unwrap();
 
-    // DMX peripheral task
-    spawner.spawn(periphs::dmx::dmx_task(uart1, dmx_tx_pin, dmx_rx_pin, pcb.dmx, dma_ch1, dma_ch2,)).unwrap();
-    let _stack = periphs::eth::start_eth(&spawner, spi1, pcb.ethernet, dma_ch3, dma_ch4).await;
+    let stack = periphs::eth::start_eth(&spawner, spi1, pcb.ethernet, dma_ch3, dma_ch4).await;
 
-    // Module Initialization
+    spawner
+        .spawn(periphs::artnet::artnet_task(stack))
+        .unwrap();
+
+    spawner
+        .spawn(periphs::dmx::dmx_task(
+            uart1,
+            dmx_tx_pin,
+            dmx_rx_pin,
+            pcb.dmx,
+            dma_ch1,
+            dma_ch2,
+        ))
+        .unwrap();
+
     init_slot(&spawner, config.modules.slot_a, pcb.slot_a);
     init_slot(&spawner, config.modules.slot_b, pcb.slot_b);
     init_slot(&spawner, config.modules.slot_c, pcb.slot_c);
@@ -67,9 +72,6 @@ async fn main(spawner: Spawner) {
     pending::<()>().await;
 }
 
-/**
- * Reads a slice of DMX channel values from the DMX_MATRIX for a given universe and starting channel.
- */
 pub fn read_channels<const N: usize>(universe: usize, start_channel: usize) -> [u8; N] {
     DMX_MATRIX.lock(|matrix| {
         let mut dest = [0u8; N];
