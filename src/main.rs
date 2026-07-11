@@ -11,6 +11,7 @@ mod modules;
 
 mod periphs {
     pub mod dmx;
+    pub mod eth;
 }
 
 use core::cell::RefCell;
@@ -47,23 +48,15 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(hardware_config);
 
     // Split hardware into board layout plus concrete DMX UART pieces
-    let (pcb, uart1, dmx_tx_pin, dmx_rx_pin, dma_ch1, dma_ch2) = PcbLayout::new(p);
+    let (pcb, uart1, dmx_tx_pin, dmx_rx_pin, dma_ch1, dma_ch2, spi1, dma_ch3, dma_ch4) = PcbLayout::new(p);
 
     // JSONC Configuration
     let config = load_config();
     CONFIG.init(config).unwrap();
 
     // DMX peripheral task
-    spawner
-        .spawn(periphs::dmx::dmx_task(
-            uart1,
-            dmx_tx_pin,
-            dmx_rx_pin,
-            pcb.dmx,
-            dma_ch1,
-            dma_ch2,
-        ))
-        .unwrap();
+    spawner.spawn(periphs::dmx::dmx_task(uart1, dmx_tx_pin, dmx_rx_pin, pcb.dmx, dma_ch1, dma_ch2,)).unwrap();
+    let _stack = periphs::eth::start_eth(&spawner, spi1, pcb.ethernet, dma_ch3, dma_ch4).await;
 
     // Module Initialization
     init_slot(&spawner, config.modules.slot_a, pcb.slot_a);

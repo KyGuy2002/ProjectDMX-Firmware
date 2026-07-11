@@ -1,5 +1,10 @@
 use embassy_rp::gpio::AnyPin;
-use embassy_rp::peripherals::{DMA_CH1, DMA_CH2, PIN_24, PIN_25, UART1};
+use embassy_rp::peripherals::{
+    DMA_CH1, DMA_CH2, DMA_CH3, DMA_CH4,
+    PIN_10, PIN_11, PIN_12, PIN_13,
+    PIN_24, PIN_25,
+    SPI1, UART1,
+};
 use embassy_rp::Peri;
 
 /// Holds the 4 hardware pins belonging to a modular PCB slot.
@@ -28,10 +33,10 @@ pub struct ButtonPins {
 
 /// Dedicated SPI Pin mapping for the Ethernet Controller.
 pub struct EthernetPins {
-    pub sck: Peri<'static, AnyPin>,
-    pub mosi: Peri<'static, AnyPin>,
-    pub miso: Peri<'static, AnyPin>,
-    pub cs: Peri<'static, AnyPin>,
+    pub sck: Peri<'static, PIN_10>,
+    pub mosi: Peri<'static, PIN_11>,
+    pub miso: Peri<'static, PIN_12>,
+    pub cs: Peri<'static, PIN_13>,
 }
 
 /// Dedicated I2C Pin mapping for the OLED Screen.
@@ -101,6 +106,9 @@ impl PcbLayout {
         Peri<'static, PIN_25>,
         Peri<'static, DMA_CH1>,
         Peri<'static, DMA_CH2>,
+        Peri<'static, SPI1>,
+        Peri<'static, DMA_CH3>,
+        Peri<'static, DMA_CH4>,
     ) {
         (
             Self {
@@ -119,10 +127,10 @@ impl PcbLayout {
                 },
 
                 ethernet: EthernetPins {
-                    sck: p.PIN_10.into(),
-                    mosi: p.PIN_11.into(),
-                    miso: p.PIN_12.into(),
-                    cs: p.PIN_13.into(),
+                    sck: p.PIN_10,
+                    mosi: p.PIN_11,
+                    miso: p.PIN_12,
+                    cs: p.PIN_13,
                 },
 
                 oled: OledPins {
@@ -188,6 +196,9 @@ impl PcbLayout {
             p.PIN_25,
             p.DMA_CH1,
             p.DMA_CH2,
+            p.SPI1,
+            p.DMA_CH3,
+            p.DMA_CH4,
         )
     }
 }
