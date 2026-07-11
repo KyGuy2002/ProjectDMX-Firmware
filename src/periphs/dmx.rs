@@ -1,32 +1,21 @@
 use defmt::{info, warn};
 
-use embassy_rp::bind_interrupts;
+
 use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{DMA_CH1, DMA_CH2, PIN_24, PIN_25, UART1};
 use embassy_rp::uart::{
-    Async, Config as UartConfig, DataBits, InterruptHandler, Parity, StopBits, Uart, UartRx, UartTx,
+    Async, Config as UartConfig, DataBits, Parity, StopBits, Uart, UartRx, UartTx,
 };
-use embassy_rp::Peri;
 
 use embassy_time::{Duration, Timer};
 
 use crate::config::InputProtocol;
-use crate::hardware::DmxPins;
+use crate::hardware::{DmxResources, DmxIrqs};
 use crate::{CONFIG, DMX_MATRIX, MAX_UNIVERSES};
 
-bind_interrupts!(struct Irqs {
-    UART1_IRQ => InterruptHandler<UART1>;
-});
+
 
 #[embassy_executor::task]
-pub async fn dmx_task(
-    uart: Peri<'static, UART1>,
-    tx_pin: Peri<'static, PIN_24>,
-    rx_pin: Peri<'static, PIN_25>,
-    pins: DmxPins,
-    tx_dma: Peri<'static, DMA_CH1>,
-    rx_dma: Peri<'static, DMA_CH2>,
-) {
+pub async fn dmx_task(r: DmxResources) {
     let config = CONFIG.get().await;
     let is_read = config.input.source == InputProtocol::Dmx;
 
@@ -34,7 +23,7 @@ pub async fn dmx_task(
     // Low = receive mode.
     // High = transmit mode.
     let _rs485_enable = Output::new(
-        pins.mode,
+        r.mode,
         if is_read { Level::Low } else { Level::High },
     );
 
@@ -46,12 +35,12 @@ pub async fn dmx_task(
     dmx_uart_cfg.parity = Parity::ParityNone;
 
     let dmx_uart = Uart::new(
-        uart,
-        tx_pin,
-        rx_pin,
-        Irqs,
-        tx_dma,
-        rx_dma,
+        r.uart,
+        r.tx,
+        r.rx,
+        DmxIrqs,
+        r.tx_dma,
+        r.rx_dma,
         dmx_uart_cfg,
     );
 

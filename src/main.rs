@@ -23,8 +23,14 @@ use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::once_lock::OnceLock;
 
 use config::{load_config, BoardInstanceConfig};
-use hardware::PcbLayout;
-use modules::init_slot;
+use modules::*;
+
+
+use crate::hardware::AssignedResources;
+use crate::hardware::*;
+
+
+
 
 // Global config
 pub static CONFIG: OnceLock<BoardInstanceConfig> = OnceLock::new();
@@ -47,25 +53,32 @@ async fn main(spawner: Spawner) {
     let hardware_config = embassy_rp::config::Config::default();
     let p = embassy_rp::init(hardware_config);
 
-    // Split hardware into board layout plus concrete DMX UART pieces
-    let (pcb, uart1, dmx_tx_pin, dmx_rx_pin, dma_ch1, dma_ch2, spi1, dma_ch3, dma_ch4) = PcbLayout::new(p);
+    // Manage pins and peripherals
+    let r = split_resources!(p);
 
     // JSONC Configuration
     let config = load_config();
     CONFIG.init(config).unwrap();
 
     // DMX peripheral task
-    spawner.spawn(periphs::dmx::dmx_task(uart1, dmx_tx_pin, dmx_rx_pin, pcb.dmx, dma_ch1, dma_ch2,)).unwrap();
-    let _stack = periphs::eth::start_eth(&spawner, spi1, pcb.ethernet, dma_ch3, dma_ch4).await;
+    spawner.spawn(periphs::dmx::dmx_task(r.dmx)).unwrap();
+    let _stack = periphs::eth::start_eth(&spawner, r.eth).await;
 
     // Module Initialization
-    init_slot(&spawner, config.modules.slot_a, pcb.slot_a);
-    init_slot(&spawner, config.modules.slot_b, pcb.slot_b);
-    init_slot(&spawner, config.modules.slot_c, pcb.slot_c);
-    init_slot(&spawner, config.modules.slot_d, pcb.slot_d);
+    init_slot_a(&spawner, config.modules.slot_a, r.slot_a_relay);
+    init_slot_b(&spawner, config.modules.slot_b, r.slot_b_unused);
+    init_slot_c(&spawner, config.modules.slot_c, r.slot_c_neo);
+    init_slot_d(&spawner, config.modules.slot_d, r.slot_d_dimmer);
 
     pending::<()>().await;
 }
+
+
+
+
+
+
+
 
 /**
  * Reads a slice of DMX channel values from the DMX_MATRIX for a given universe and starting channel.

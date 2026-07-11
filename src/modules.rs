@@ -1,27 +1,29 @@
 use embassy_executor::Spawner;
 
 use crate::config::*;
-use crate::hardware::SlotPins;
+use crate::hardware::*;
 
 mod dimmer;
 
-pub fn init_slot(spawner: &Spawner, slot_config: ModuleSlot, pins: SlotPins) {
-    match slot_config {
-        ModuleSlot::Neo(settings) => {
-            // spawner.spawn(neopixel_driver_task(settings, pins)).unwrap();
-        }
-        ModuleSlot::Dimmer(settings) => {
-            spawner.spawn(dimmer::dimmer_task(settings, pins)).unwrap();
-        }
-        ModuleSlot::FogMachine(settings) => {
-            // spawner.spawn(fog_machine_task(settings, pins)).unwrap();
-        }
-        ModuleSlot::AudioAmp(settings) => {
-            // spawner.spawn(audio_amp_task(settings, pins)).unwrap();
-        }
-        ModuleSlot::Rfid(settings) => {
-            // spawner.spawn(rfid_task(settings, pins)).unwrap();
-        }
-        ModuleSlot::Disabled { .. } => {}
+/**
+ * This will eventually use the config for module order but for now its hardcoded, along with the pin assignments and pwm slices and stuff
+ */
+
+pub fn init_slot_a(spawner: &Spawner, slot_config: ModuleSlot, r: SlotARelayResources) {
+    
+}
+
+pub fn init_slot_b(spawner: &Spawner, slot_config: ModuleSlot, r: SlotBUnusedResources) {
+    
+}
+
+pub fn init_slot_c(spawner: &Spawner, slot_config: ModuleSlot, r: SlotCNeoResources) {
+    
+}
+
+// Dimmer slot D
+pub fn init_slot_d(spawner: &Spawner, slot_config: ModuleSlot, r: SlotDDimmerResources) {
+    if let ModuleSlot::Dimmer(settings) = slot_config {
+        spawner.spawn(dimmer::dimmer_task(settings, r)).unwrap();
     }
 }

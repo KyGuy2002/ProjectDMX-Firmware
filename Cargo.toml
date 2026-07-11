@@ -28,6 +28,7 @@ embassy-net-wiznet = { version = "0.3" }
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"
 embedded-hal-bus = { version = "0.3", features = ["async"] }
+assign-resources = "0.5.0"
 
 # Embedded basics
 cortex-m = { version = "0.7", features = ["inline-asm"] }
