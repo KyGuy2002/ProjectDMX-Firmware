@@ -1,0 +1,57 @@
+{
+    "input": {
+        "source": "dmx"
+    },
+    "dmx_output": {
+        "universe": 0
+    },
+    "modules": {
+        "slot_a": {
+            "type": "fog_machine",
+            "universe": 1,
+            "start_channel": 5
+        },
+        "slot_b": {
+            "disabled": true
+        },
+        "slot_c": {
+            "type": "neo",
+            "ports": [
+
+                // Alibaba Uplights
+                {
+                    "protocol": "ws2812",
+                    "color_order": "rgbw",
+                    "pixel_count": 10,
+                    "universe": 2,
+                    "start_channel": 1
+                },
+
+                //
+                {
+                    "disabled": true
+                },
+
+                // Alibaba Glowing Wire
+                {
+                    "protocol": "ws2812",
+                    "color_order": "grb",
+                    "pixel_count": 100,
+                    "universe": 2,
+                    "start_channel": 11
+                },
+
+                //
+                {
+                    "disabled": true
+                }
+
+            ]
+        },
+        "slot_d": {
+            "type": "dimmer",
+            "universe": 1,
+            "start_channel": 1
+        }
+    }
+}
