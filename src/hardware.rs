@@ -4,59 +4,56 @@ use embassy_rp::peripherals::{
     PIN_2, PIN_3, PIN_4, PIN_5, PIN_6, PIN_7, PIN_8, PIN_9,
     PIN_10, PIN_11, PIN_12, PIN_13,
     PIN_14, PIN_15, PIN_16, PIN_17, PIN_18, PIN_19,
-    PIN_24, PIN_25, PIN_40, PIN_41,
-    PWM_SLICE1, PWM_SLICE2, PWM_SLICE4, PWM_SLICE7,
+    PIN_24, PIN_25,
+    PIN_40, PIN_41,
+    PWM_SLICE0, PWM_SLICE1, PWM_SLICE2, PWM_SLICE3, PWM_SLICE4, PWM_SLICE7, PWM_SLICE8,
     SPI1, UART1,
 };
-use embassy_rp::pwm::{Config as PwmConfig, Pwm};
-use embassy_rp::{Peri, PeripheralType};
+use embassy_rp::Peri;
 
-pub struct SlotPins<P1, P2, P3, P4, PWM>
-where
-    P1: PeripheralType + 'static,
-    P2: PeripheralType + 'static,
-    P3: PeripheralType + 'static,
-    P4: PeripheralType + 'static,
-    PWM: PeripheralType + 'static,
-{
-    pub pin1: Peri<'static, P1>,
-    pub pin2: Peri<'static, P2>,
-    pub pin3: Peri<'static, P3>,
-    pub pin4: Peri<'static, P4>,
-    pub pin1_pwm: Peri<'static, PWM>,
+pub struct SlotA {
+    pub pin1: Peri<'static, PIN_4>,
+    pub pin2: Peri<'static, PIN_3>,
+    pub pin3: Peri<'static, PIN_2>,
+    pub pin4: Peri<'static, PIN_40>,
 }
 
-pub type SlotA = SlotPins<PIN_4, PIN_3, PIN_2, PIN_40, PWM_SLICE2>;
-pub type SlotB = SlotPins<PIN_8, PIN_6, PIN_5, PIN_41, PWM_SLICE4>;
-pub type SlotC = SlotPins<PIN_15, PIN_14, PIN_9, PIN_7, PWM_SLICE7>;
-pub type SlotD = SlotPins<PIN_19, PIN_18, PIN_17, PIN_16, PWM_SLICE1>;
-
-pub trait SlotPwm {
-    fn into_pwm(self, cfg: PwmConfig) -> Pwm<'static>;
+pub struct SlotB {
+    pub pin1: Peri<'static, PIN_8>,
+    pub pin2: Peri<'static, PIN_6>,
+    pub pin3: Peri<'static, PIN_5>,
+    pub pin4: Peri<'static, PIN_41>,
 }
 
-impl SlotPwm for SlotA {
-    fn into_pwm(self, cfg: PwmConfig) -> Pwm<'static> {
-        Pwm::new_output_a(self.pin1_pwm, self.pin1, cfg)
-    }
+pub struct SlotC {
+    pub pin1: Peri<'static, PIN_15>,
+    pub pin2: Peri<'static, PIN_14>,
+    pub pin3: Peri<'static, PIN_9>,
+    pub pin4: Peri<'static, PIN_7>,
 }
 
-impl SlotPwm for SlotB {
-    fn into_pwm(self, cfg: PwmConfig) -> Pwm<'static> {
-        Pwm::new_output_a(self.pin1_pwm, self.pin1, cfg)
-    }
+pub struct SlotD {
+    pub pin1: Peri<'static, PIN_19>,
+    pub pin2: Peri<'static, PIN_18>,
+    pub pin3: Peri<'static, PIN_17>,
+    pub pin4: Peri<'static, PIN_16>,
 }
 
-impl SlotPwm for SlotC {
-    fn into_pwm(self, cfg: PwmConfig) -> Pwm<'static> {
-        Pwm::new_output_b(self.pin1_pwm, self.pin1, cfg)
-    }
+pub struct Slots {
+    pub slot_a: SlotA,
+    pub slot_b: SlotB,
+    pub slot_c: SlotC,
+    pub slot_d: SlotD,
 }
 
-impl SlotPwm for SlotD {
-    fn into_pwm(self, cfg: PwmConfig) -> Pwm<'static> {
-        Pwm::new_output_b(self.pin1_pwm, self.pin1, cfg)
-    }
+pub struct PwmSlices {
+    pub slice0: Peri<'static, PWM_SLICE0>,
+    pub slice1: Peri<'static, PWM_SLICE1>,
+    pub slice2: Peri<'static, PWM_SLICE2>,
+    pub slice3: Peri<'static, PWM_SLICE3>,
+    pub slice4: Peri<'static, PWM_SLICE4>,
+    pub slice7: Peri<'static, PWM_SLICE7>,
+    pub slice8: Peri<'static, PWM_SLICE8>,
 }
 
 pub struct SdCardPins {
@@ -118,10 +115,8 @@ pub struct PcbLayout {
     pub dmx: DmxPins,
     pub audio: AudioPins,
     pub unused: UnusedPins,
-    pub slot_a: SlotA,
-    pub slot_b: SlotB,
-    pub slot_c: SlotC,
-    pub slot_d: SlotD,
+    pub slots: Slots,
+    pub pwm: PwmSlices,
     pub digital_inputs: InputPins,
 }
 
@@ -183,36 +178,44 @@ impl PcbLayout {
                     pin3: p.PIN_28.into(),
                 },
 
-                slot_a: SlotPins {
-                    pin1: p.PIN_4,
-                    pin2: p.PIN_3,
-                    pin3: p.PIN_2,
-                    pin4: p.PIN_40,
-                    pin1_pwm: p.PWM_SLICE2,
+                slots: Slots {
+                    slot_a: SlotA {
+                        pin1: p.PIN_4,
+                        pin2: p.PIN_3,
+                        pin3: p.PIN_2,
+                        pin4: p.PIN_40,
+                    },
+
+                    slot_b: SlotB {
+                        pin1: p.PIN_8,
+                        pin2: p.PIN_6,
+                        pin3: p.PIN_5,
+                        pin4: p.PIN_41,
+                    },
+
+                    slot_c: SlotC {
+                        pin1: p.PIN_15,
+                        pin2: p.PIN_14,
+                        pin3: p.PIN_9,
+                        pin4: p.PIN_7,
+                    },
+
+                    slot_d: SlotD {
+                        pin1: p.PIN_19,
+                        pin2: p.PIN_18,
+                        pin3: p.PIN_17,
+                        pin4: p.PIN_16,
+                    },
                 },
 
-                slot_b: SlotPins {
-                    pin1: p.PIN_8,
-                    pin2: p.PIN_6,
-                    pin3: p.PIN_5,
-                    pin4: p.PIN_41,
-                    pin1_pwm: p.PWM_SLICE4,
-                },
-
-                slot_c: SlotPins {
-                    pin1: p.PIN_15,
-                    pin2: p.PIN_14,
-                    pin3: p.PIN_9,
-                    pin4: p.PIN_7,
-                    pin1_pwm: p.PWM_SLICE7,
-                },
-
-                slot_d: SlotPins {
-                    pin1: p.PIN_19,
-                    pin2: p.PIN_18,
-                    pin3: p.PIN_17,
-                    pin4: p.PIN_16,
-                    pin1_pwm: p.PWM_SLICE1,
+                pwm: PwmSlices {
+                    slice0: p.PWM_SLICE0,
+                    slice1: p.PWM_SLICE1,
+                    slice2: p.PWM_SLICE2,
+                    slice3: p.PWM_SLICE3,
+                    slice4: p.PWM_SLICE4,
+                    slice7: p.PWM_SLICE7,
+                    slice8: p.PWM_SLICE8,
                 },
 
                 digital_inputs: InputPins {

@@ -25,7 +25,7 @@ use embassy_sync::once_lock::OnceLock;
 
 use config::{load_config, BoardInstanceConfig};
 use hardware::PcbLayout;
-use modules::init_slot;
+use modules::init_modules;
 
 pub static CONFIG: OnceLock<BoardInstanceConfig> = OnceLock::new();
 
@@ -45,6 +45,12 @@ async fn main(spawner: Spawner) {
         PcbLayout::new(p);
 
     let config = load_config();
+
+    let slot_a_config = config.modules.slot_a.clone();
+    let slot_b_config = config.modules.slot_b.clone();
+    let slot_c_config = config.modules.slot_c.clone();
+    let slot_d_config = config.modules.slot_d.clone();
+
     CONFIG.init(config).unwrap();
 
     let stack = periphs::eth::start_eth(&spawner, spi1, pcb.ethernet, dma_ch3, dma_ch4).await;
@@ -64,10 +70,15 @@ async fn main(spawner: Spawner) {
         ))
         .unwrap();
 
-    init_slot(&spawner, config.modules.slot_a, pcb.slot_a);
-    init_slot(&spawner, config.modules.slot_b, pcb.slot_b);
-    init_slot(&spawner, config.modules.slot_c, pcb.slot_c);
-    init_slot(&spawner, config.modules.slot_d, pcb.slot_d);
+    init_modules(
+        &spawner,
+        slot_a_config,
+        slot_b_config,
+        slot_c_config,
+        slot_d_config,
+        pcb.slots,
+        pcb.pwm,
+    );
 
     pending::<()>().await;
 }
