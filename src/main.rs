@@ -35,7 +35,7 @@ use dmx_state::{DmxParams, DMX_SIGNAL};
 // ==========================================
 // CONFIGURATION FLAG
 // ==========================================
-const IS_RGBW: bool = true; // Set to true for RGBW strips, false for RGB strips
+const IS_RGBW: bool = false; // Set to true for RGBW strips, false for RGB strips
 // ==========================================
 
 bind_interrupts!(struct Irqs {
@@ -107,7 +107,7 @@ async fn main(spawner: Spawner) {
             &mut common,
             sm0,
             p.DMA_CH0,
-            p.PIN_15,
+            p.PIN_14,
             program,
         ))
     } else {
@@ -115,7 +115,7 @@ async fn main(spawner: Spawner) {
             &mut common,
             sm0,
             p.DMA_CH0,
-            p.PIN_15,
+            p.PIN_14,
             program,
         ))
     };
