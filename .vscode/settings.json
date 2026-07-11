@@ -5,5 +5,11 @@
   "rust-analyzer.inlayHints.closingBraceHints.enable": false,
   "rust-analyzer.inlayHints.lifetimeElisionHints.enable": "never",
 
-  "rust-analyzer.check.allTargets": false
+  "rust-analyzer.check.allTargets": false,
+
+  "rust-analyzer.check.command": "check",
+    "rust-analyzer.check.extraArgs": [
+      "--target",
+      "thumbv8m.main-none-eabihf" 
+    ]
 }
