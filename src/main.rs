@@ -12,6 +12,7 @@ mod modules;
 mod periphs {
     pub mod dmx;
     pub mod eth;
+    pub mod artnet;
 }
 
 use core::cell::RefCell;
@@ -22,7 +23,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::once_lock::OnceLock;
 
-use config::{load_config, BoardInstanceConfig};
+use config::*;
 use modules::*;
 
 
@@ -41,28 +42,46 @@ pub const MAX_UNIVERSES: usize = 4;
 pub static DMX_MATRIX: Mutex<CriticalSectionRawMutex, RefCell<[[u8; 512]; MAX_UNIVERSES]>> =
     Mutex::new(RefCell::new([[0u8; 512]; MAX_UNIVERSES]));
 
+
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
+
+
     info!("=======================================");
     info!("");
     info!("     ProjectDMX Controller Booting     ");
     info!("              Version 0.1r             ");
     info!("");
 
+
+
     // Embassy init
     let hardware_config = embassy_rp::config::Config::default();
     let p = embassy_rp::init(hardware_config);
 
+
+
     // Manage pins and peripherals
     let r = split_resources!(p);
+
+
 
     // JSONC Configuration
     let config = load_config();
     CONFIG.init(config).unwrap();
 
-    // DMX peripheral task
-    spawner.spawn(periphs::dmx::dmx_task(r.dmx)).unwrap();
-    let _stack = periphs::eth::start_eth(&spawner, r.eth).await;
+
+
+    // Spawn Peripherals
+    spawner.spawn(periphs::dmx::dmx_task(r.dmx)).unwrap(); // DMX
+
+    if config.input.source == InputProtocol::Artnet {
+        let _stack = periphs::eth::start_eth(&spawner, r.eth).await; // Ethernet
+        spawner.spawn(periphs::artnet::artnet_task(_stack)).unwrap(); // ArtNet
+    }
+
+
 
     // Module Initialization
     init_slot_a(&spawner, config.modules.slot_a, r.slot_a_relay);
@@ -70,7 +89,11 @@ async fn main(spawner: Spawner) {
     init_slot_c(&spawner, config.modules.slot_c, r.slot_c_neo);
     init_slot_d(&spawner, config.modules.slot_d, r.slot_d_dimmer);
 
+
+
     pending::<()>().await;
+
+
 }
 
 
