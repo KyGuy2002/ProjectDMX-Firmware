@@ -109,7 +109,7 @@ impl SegmentRule {
 const CONFIG_SEGMENTS: &[SegmentRule] = &[
 
 
-    SegmentRule::line(0, 400, 0, 0,0, 0, 0), // Top left flat 2
+    SegmentRule::line(0, 400, 0, 0,255, 0, 255), // Top left flat 2
 
 
 ];
