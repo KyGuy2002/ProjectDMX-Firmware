@@ -11,9 +11,10 @@ use crate::config::*;
 use embassy_rp::{peripherals};
 use crate::MAX_PIXELS;
 
-mod neo_effects;
+mod neo_effects_2d;
 mod tick_neo_effect;
 use tick_neo_effect::*;
+use crate::pixel_mapping_config::get_layout_map;
 
 
 
@@ -44,6 +45,12 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
 
 
 
+    // Setup effect state
+    let layout_table = get_layout_map();
+    let mut strip_3_effect_state = NeoEffectState::new();
+
+
+
     // Setup ticker
     let mut ticker = Ticker::every(Duration::from_millis(20)); // Clean ~50FPS Refresh rate
 
@@ -60,7 +67,7 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
         // Strip 3
         if let Port::Enabled(port_config) = settings.ports[2] {
             // tick_solid_color_rgb(port_config, &mut leds_output_3);
-            tick_wire_effect_rgb(port_config, &mut leds_output_3);
+            tick_wire_effect_rgb(port_config, &mut strip_3_effect_state, &layout_table, &mut leds_output_3);
         }
 
         

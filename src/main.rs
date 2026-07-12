@@ -8,6 +8,7 @@ use panic_probe as _;
 mod config;
 mod hardware;
 mod modules;
+mod pixel_mapping_config;
 
 mod periphs {
     pub mod dmx;

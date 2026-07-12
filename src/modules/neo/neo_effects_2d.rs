@@ -1,13 +1,8 @@
 // src/neo_effects.rs
 
 use smart_leds::RGB8;
-use crate::config::{PixelMeta};
+use crate::pixel_mapping_config::PixelMeta;
 use crate::modules::neo::tick_neo_effect::DmxParams;
-
-/// Converts logical colors directly to physical layout mapping rules (GRB Swapped)
-pub fn rgb_fixed(r: u8, g: u8, b: u8) -> RGB8 {
-    RGB8::new(g, r, b)
-}
 
 /// Fixed point interpolation between frames
 pub fn blend_rgb(from: RGB8, to: RGB8, alpha: u16) -> RGB8 {
@@ -31,8 +26,8 @@ pub fn render_base_effect(
     }
 
     // Extract the primary and secondary color structs straight from incoming DMX parameters
-    let color1 = rgb_fixed(params.r, params.g, params.b);
-    let color2 = rgb_fixed(params.r2, params.g2, params.b2);
+    let color1 = RGB8::new(params.r, params.g, params.b);
+    let color2 = RGB8::new(params.r2, params.g2, params.b2);
 
     match id {
 
@@ -94,9 +89,9 @@ pub fn render_base_effect(
 
         // 5: 4th July Static letter assignments (U=Red, S=White, A=Blue, Mirroring to 250)
         5 => match meta.letter_id {
-            0 | 5 => rgb_fixed(255, 0, 0),     // U and 0 -> Red
-            1 | 4 => rgb_fixed(255, 255, 255), // S and 5 -> White
-            2 | 3 => rgb_fixed(0, 0, 255),     // A and 2 -> Blue
+            0 | 5 => RGB8::new(255, 0, 0),     // U and 0 -> Red
+            1 | 4 => RGB8::new(255, 255, 255), // S and 5 -> White
+            2 | 3 => RGB8::new(0, 0, 255),     // A and 2 -> Blue
             _ => RGB8::default(),
         },
 
@@ -147,7 +142,7 @@ pub fn render_base_effect(
         255 => {
             // Use the speed parameter directly as the target pixel index
             if meta.index == (params.speed as usize) {
-                rgb_fixed(255, 255, 255) // Solid white for the identified pixel
+                RGB8::new(255, 255, 255) // Solid white for the identified pixel
             } else {
                 RGB8::default() // Turn everything else off
             }
@@ -336,10 +331,10 @@ fn patriotic_wheel(pos: u8) -> RGB8 {
     let section = pos / 64;
     let step = (pos % 64) as u16;
     match section {
-        0 => { let v = fade(step); rgb_fixed(255, v, v) }
-        1 => { let v = fade(63 - step); rgb_fixed(v, v, 255) }
-        2 => { let v = fade(step); rgb_fixed(v, v, 255) }
-        _ => { let v = fade(63 - step); rgb_fixed(255, v, v) }
+        0 => { let v = fade(step); RGB8::new(255, v, v) }
+        1 => { let v = fade(63 - step); RGB8::new(v, v, 255) }
+        2 => { let v = fade(step); RGB8::new(v, v, 255) }
+        _ => { let v = fade(63 - step); RGB8::new(255, v, v) }
     }
 }
 
@@ -350,12 +345,12 @@ fn fade(step: u16) -> u8 {
 fn wheel(mut pos: u8) -> RGB8 {
     pos = 255u8.wrapping_sub(pos);
     if pos < 85 {
-        rgb_fixed(255u8.wrapping_sub(pos * 3), 0, pos * 3)
+        RGB8::new(255u8.wrapping_sub(pos * 3), 0, pos * 3)
     } else if pos < 170 {
         let pos = pos - 85;
-        rgb_fixed(0, pos * 3, 255u8.wrapping_sub(pos * 3))
+        RGB8::new(0, pos * 3, 255u8.wrapping_sub(pos * 3))
     } else {
         let pos = pos - 170;
-        rgb_fixed(pos * 3, 255u8.wrapping_sub(pos * 3), 0)
+        RGB8::new(pos * 3, 255u8.wrapping_sub(pos * 3), 0)
     }
 }
