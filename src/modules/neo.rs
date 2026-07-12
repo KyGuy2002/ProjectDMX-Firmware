@@ -11,7 +11,9 @@ use crate::config::*;
 use embassy_rp::{peripherals};
 use crate::MAX_PIXELS;
 
-
+mod neo_effects;
+mod tick_neo_effect;
+use tick_neo_effect::*;
 
 
 
@@ -57,7 +59,8 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
 
         // Strip 3
         if let Port::Enabled(port_config) = settings.ports[2] {
-            tick_solid_color_rgb(port_config, &mut leds_output_3);
+            // tick_solid_color_rgb(port_config, &mut leds_output_3);
+            tick_wire_effect_rgb(port_config, &mut leds_output_3);
         }
 
         
