@@ -82,9 +82,9 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
             } else if port_config.mode == NeoMode::Generator2D {
                 tick_wire_effect_rgb(port_config, &mut strip_3_effect_state, &layout_table, &mut leds_output_3);
             }
-            // else if port_config.mode == NeoMode::Raw {
-            //     tick_raw_rgb(port_config, &mut leds_output_3);
-            // }
+            else if port_config.mode == NeoMode::Raw {
+                tick_raw_rgb(port_config, &mut leds_output_3);
+            }
             
         }
 
@@ -150,6 +150,28 @@ fn tick_raw_rgbw(port_config: EnabledPort, leds_output: &mut [RGBW<u8>; MAX_PIXE
             g: ch[1],
             b: ch[2],
             a: White(0),
+        };
+
+    }
+
+}
+
+
+fn tick_raw_rgb(port_config: EnabledPort, leds_output: &mut [RGB8; MAX_PIXELS]) {
+
+    for i in 0..port_config.pixel_count {
+
+        let dmx_channel = port_config.start_channel as usize + (i * 3);
+
+        let ch = read_channels::<3>(
+            port_config.universe as usize,
+            dmx_channel,
+        );
+
+        leds_output[i] = RGB8 {
+            r: ch[0],
+            g: ch[1],
+            b: ch[2]
         };
 
     }

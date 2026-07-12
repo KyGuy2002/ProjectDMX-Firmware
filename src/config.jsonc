@@ -40,7 +40,7 @@
                     "pixel_count": 100,
                     "universe": 4,
                     "start_channel": 0,
-                    "mode": "generator2d"
+                    "mode": "raw"
                 },
 
                 //
