@@ -10,6 +10,7 @@ use crate::read_channels;
 use crate::config::*;
 use embassy_rp::{peripherals};
 use crate::MAX_PIXELS;
+use heapless::Vec;
 
 mod neo_effects_2d;
 mod tick_neo_effect;
@@ -132,25 +133,25 @@ fn tick_solid_color_rgb(port_config: EnabledPort, leds_output: &mut [RGB8; MAX_P
 
 }
 
+// Just rgb with fake white for now
 fn tick_raw_rgbw(port_config: EnabledPort, leds_output: &mut [RGBW<u8>; MAX_PIXELS]) {
 
-    let mut current_universe = port_config.universe as usize;
-    let mut current_channel = port_config.start_channel as usize;
+    // Get max universes needed
+    let universe_total = ((port_config.pixel_count * 3) + 510 - 1) / 510;
+
+    // Get all data
+    let mut universe_copy: Vec<u8, {MAX_PIXELS * 3}> = Vec::new();
+    for temp_u in 0..universe_total {
+        universe_copy.extend(read_channels::<510>(temp_u + port_config.universe as usize, 0));
+    }
 
     for i in 0..port_config.pixel_count {
 
-        let dmx = read_channels::<4>(current_universe, current_channel);
-        current_channel += 4;
-        if current_channel >= 512 {
-            current_channel = 0;
-            current_universe += 1;
-        }
-
         leds_output[i] = RGBW {
-            r: dmx[0],
-            g: dmx[1],
-            b: dmx[2],
-            a: White(dmx[3])
+            r: universe_copy[i * 3],
+            g: universe_copy[i * 3 + 1],
+            b: universe_copy[i * 3 + 2],
+            a: White(0)
         };
 
     }

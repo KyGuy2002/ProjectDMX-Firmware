@@ -38,9 +38,9 @@
                     "protocol": "ws2812",
                     "color_order": "grb",
                     "pixel_count": 100,
-                    "universe": 2,
-                    "start_channel": 10,
-                    "mode": "generator2d"
+                    "universe": 4,
+                    "start_channel": 0,
+                    "mode": "raw"
                 },
 
                 //
