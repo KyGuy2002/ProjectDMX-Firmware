@@ -25,29 +25,31 @@ impl ErrorType for FakeInt {
     type Error = Infallible;
 }
 
+const POLL_INTERVAL: Duration = Duration::from_millis(1);
+
 impl Wait for FakeInt {
     async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(POLL_INTERVAL).await;
         Ok(())
     }
 
     async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(POLL_INTERVAL).await;
         Ok(())
     }
 
     async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(POLL_INTERVAL).await;
         Ok(())
     }
 
     async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(POLL_INTERVAL).await;
         Ok(())
     }
 
     async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(POLL_INTERVAL).await;
         Ok(())
     }
 }

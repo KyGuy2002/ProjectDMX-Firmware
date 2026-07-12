@@ -7,7 +7,9 @@
     },
     "modules": {
         "slot_a": {
-            "disabled": true
+            "type": "fog_machine",
+            "universe": 1,
+            "start_channel": 4
         },
         "slot_b": {
             "disabled": true
@@ -18,7 +20,12 @@
 
                 // Alibaba Uplights
                 {
-                    "disabled": true
+                    "protocol": "ws2812",
+                    "color_order": "rgbw",
+                    "pixel_count": 10,
+                    "universe": 2,
+                    "start_channel": 0,
+                    "mode": "raw"
                 },
 
                 //
@@ -31,7 +38,7 @@
                     "protocol": "ws2812",
                     "color_order": "grb",
                     "pixel_count": 100,
-                    "universe": 1,
+                    "universe": 3,
                     "start_channel": 0,
                     "mode": "raw"
                 },
@@ -44,7 +51,9 @@
             ]
         },
         "slot_d": {
-            "disabled": true
+            "type": "dimmer",
+            "universe": 1,
+            "start_channel": 0
         }
     }
 }
