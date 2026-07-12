@@ -1307,6 +1307,7 @@ dependencies = [
  "critical-section",
  "defmt 1.1.1",
  "defmt-rtt",
+ "display-interface-i2c",
  "embassy-executor",
  "embassy-futures",
  "embassy-net",

@@ -14,6 +14,7 @@ mod periphs {
     pub mod dmx;
     pub mod eth;
     pub mod artnet;
+    pub mod oled;
 }
 
 use core::cell::RefCell;
@@ -21,8 +22,11 @@ use core::future::pending;
 
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::blocking_mutex::Mutex;
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
+use embassy_sync::mutex::Mutex as AsyncMutex;
 use embassy_sync::once_lock::OnceLock;
+use embassy_net::Ipv4Address;
+use static_cell::StaticCell;
 
 use config::*;
 use modules::*;
@@ -41,9 +45,10 @@ pub static CONFIG: OnceLock<BoardInstanceConfig> = OnceLock::new();
 pub const MAX_UNIVERSES: usize = 8;
 pub const MAX_PIXELS: usize = 500;
 
-pub static DMX_MATRIX: Mutex<CriticalSectionRawMutex, RefCell<[[u8; 512]; MAX_UNIVERSES]>> =
-    Mutex::new(RefCell::new([[0u8; 512]; MAX_UNIVERSES]));
+pub static DMX_MATRIX: BlockingMutex<CriticalSectionRawMutex, RefCell<[[u8; 512]; MAX_UNIVERSES]>> =
+    BlockingMutex::new(RefCell::new([[0u8; 512]; MAX_UNIVERSES]));
 
+static IP_STATE: StaticCell<AsyncMutex<CriticalSectionRawMutex, Option<Ipv4Address>>> = StaticCell::new();
 
 
 #[embassy_executor::main]
@@ -76,11 +81,12 @@ async fn main(spawner: Spawner) {
 
 
     // Spawn Peripherals
+    let ip_state = IP_STATE.init(AsyncMutex::new(None));
+    spawner.spawn(periphs::oled::oled_task(r.oled, ip_state)).unwrap(); // OLED
     spawner.spawn(periphs::dmx::dmx_task(r.dmx)).unwrap(); // DMX
-
     if config.input.source == InputProtocol::Artnet {
-        let _stack = periphs::eth::start_eth(&spawner, r.eth).await; // Ethernet
-        spawner.spawn(periphs::artnet::artnet_task(_stack)).unwrap(); // ArtNet
+        let stack = periphs::eth::start_eth(&spawner, r.eth, ip_state).await; // Ethernet
+        spawner.spawn(periphs::artnet::artnet_task(stack)).unwrap(); // ArtNet
     }
 
 

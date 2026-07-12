@@ -5,6 +5,7 @@ use embassy_rp::{peripherals, Peri};
 use embassy_rp::bind_interrupts;
 use embassy_rp::pio::InterruptHandler as PioInterruptHandler;
 use embassy_rp::uart::InterruptHandler as UartInterruptHandler;
+use embassy_rp::i2c::InterruptHandler as I2cInterruptHandler;
 use static_cell::StaticCell;
 
 
@@ -25,6 +26,11 @@ assign_resources! {
         uart: UART1,
         tx_dma: DMA_CH1,
         rx_dma: DMA_CH2, 
+    },
+    oled: OledResources {
+        sda: PIN_38,
+        scl: PIN_27, // Used to be 39 but pcb routing error
+        i2c: I2C1,
     },
     slot_a_relay: SlotARelayResources {
         pin1: PIN_4,
@@ -69,5 +75,10 @@ bind_interrupts!(pub struct DmxIrqs {
 bind_interrupts!(pub struct NeoIrqs {
     PIO0_IRQ_0 => PioInterruptHandler<peripherals::PIO0>;
 });
+
+bind_interrupts!(pub struct OledIrqs {
+    I2C1_IRQ => I2cInterruptHandler<peripherals::I2C1>;
+});
+
 
 pub static NEO_PROGRAM: StaticCell<PioWs2812Program<peripherals::PIO0>> = StaticCell::new();

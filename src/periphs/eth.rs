@@ -16,6 +16,9 @@ use embedded_hal::digital::{ErrorType, OutputPin};
 use embedded_hal_async::digital::Wait;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use static_cell::StaticCell;
+use embassy_net::Ipv4Address;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex as AsyncMutex;
 
 use crate::hardware::{EthResources, EthSpi};
 
@@ -84,7 +87,8 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device<'static>>) -> 
 
 pub async fn start_eth(
     spawner: &Spawner,
-    r: EthResources
+    r: EthResources,
+    ip_state: &'static AsyncMutex<CriticalSectionRawMutex, Option<Ipv4Address>>
 ) -> Stack<'static> {
     info!("Starting W5500 Ethernet");
 
@@ -138,6 +142,9 @@ pub async fn start_eth(
 
     if let Some(config) = stack.config_v4() {
         info!("Ethernet IP: {}", config.address.address());
+
+        let mut ip = ip_state.lock().await;
+        *ip = Some(config.address.address());
     }
 
     stack
