@@ -1,5 +1,6 @@
 use embassy_time::{Duration, Timer};
 use embassy_rp::pwm::{Config as PwmConfig, Pwm};
+use defmt::info;
 
 use crate::hardware::SlotDDimmerResources;
 use crate::read_channels;
@@ -8,6 +9,8 @@ use crate::config::DimmerConfig;
 
 #[embassy_executor::task]
 pub async fn dimmer_task(settings: DimmerConfig, r: SlotDDimmerResources) {
+
+    info!("Starting dimmer task");
 
     let mut cfg1 = PwmConfig::default();
     cfg1.top = 255;

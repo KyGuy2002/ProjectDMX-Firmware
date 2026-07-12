@@ -85,8 +85,8 @@ async fn main(spawner: Spawner) {
 
 
     // Module Initialization
-    init_slot_a(&spawner, config.modules.slot_a, r.slot_a_relay);
-    init_slot_b(&spawner, config.modules.slot_b, r.slot_b_unused);
+    // init_slot_a(&spawner, config.modules.slot_a, r.slot_a_relay);
+    // init_slot_b(&spawner, config.modules.slot_b, r.slot_b_unused);
     init_slot_c(&spawner, config.modules.slot_c, r.slot_c_neo);
     init_slot_d(&spawner, config.modules.slot_d, r.slot_d_dimmer);
 

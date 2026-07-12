@@ -1,6 +1,6 @@
 {
     "input": {
-        "source": "dmx"
+        "source": "artnet"
     },
     "dmx_output": {
         "universe": 0
@@ -9,7 +9,7 @@
         "slot_a": {
             "type": "fog_machine",
             "universe": 1,
-            "start_channel": 5
+            "start_channel": 4
         },
         "slot_b": {
             "disabled": true
@@ -24,7 +24,7 @@
                     "color_order": "rgbw",
                     "pixel_count": 10,
                     "universe": 2,
-                    "start_channel": 1
+                    "start_channel": 0
                 },
 
                 //
@@ -38,7 +38,7 @@
                     "color_order": "grb",
                     "pixel_count": 100,
                     "universe": 2,
-                    "start_channel": 11
+                    "start_channel": 10
                 },
 
                 //
@@ -51,7 +51,7 @@
         "slot_d": {
             "type": "dimmer",
             "universe": 1,
-            "start_channel": 1
+            "start_channel": 0
         }
     }
 }

@@ -1,5 +1,6 @@
 use embassy_rp::pio::Pio;
 use embassy_time::{Duration, Ticker};
+use defmt::info;
 
 use embassy_rp::pio_programs::ws2812::{Rgb, Rgbw, Grb, Grbw, PioWs2812, RgbwPioWs2812, PioWs2812Program};
 use smart_leds::{RGB8, RGBW, White};
@@ -17,7 +18,7 @@ use crate::MAX_PIXELS;
 #[embassy_executor::task]
 pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
 
-
+    info!("Starting NeoPixel task");
 
     // Setup PIO state machines
     let Pio { mut common, sm0, sm1, sm2, sm3, .. } = Pio::new(r.pio, NeoIrqs);
@@ -25,11 +26,11 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
 
 
 
-    // Init drivers
-    let mut strip_1 = RgbwPioWs2812::<peripherals::PIO0, 0, MAX_PIXELS, Rgbw>::with_color_order(&mut common,sm0,r.dma1,r.pin1,program);
-    // let mut ws2812_2 = PioWs2812::<peripherals::PIO0, 1, MAX_PIXELS, Grb>::with_color_order(&mut common,sm1,r.dma2,r.pin2,program);
-    let mut strip_3 = PioWs2812::<peripherals::PIO0, 2, MAX_PIXELS, Grb>::with_color_order(&mut common,sm2,r.dma3,r.pin3,program);
-    // let mut ws2812_4 = PioWs2812::<peripherals::PIO0, 3, MAX_PIXELS, Grb>::with_color_order(&mut common,sm3,r.dma4,r.pin4,program);
+    // Init drivers - Note pin order is based on module layout
+    let mut strip_1 = RgbwPioWs2812::<peripherals::PIO0, 0, MAX_PIXELS, Rgbw>::with_color_order(&mut common,sm0,r.dma1,r.pin3,program);
+    // let mut ws2812_2 = PioWs2812::<peripherals::PIO0, 1, MAX_PIXELS, Grb>::with_color_order(&mut common,sm1,r.dma2,r.pin4,program);
+    let mut strip_3 = PioWs2812::<peripherals::PIO0, 2, MAX_PIXELS, Grb>::with_color_order(&mut common,sm2,r.dma3,r.pin2,program);
+    // let mut ws2812_4 = PioWs2812::<peripherals::PIO0, 3, MAX_PIXELS, Grb>::with_color_order(&mut common,sm3,r.dma4,r.pin1,program);
 
 
 
@@ -79,12 +80,14 @@ fn tick_solid_color_rgbw(port_config: EnabledPort, leds_output: &mut [RGBW<u8>; 
 
     let ch = read_channels::<5>(port_config.universe as usize, port_config.start_channel as usize);
 
+    info!("{} {} {} {} {}", ch[0], ch[1], ch[2], ch[3], ch[4]);
+
     for i in 0..port_config.pixel_count {
         leds_output[i] = RGBW {
-            r: (ch[0] as u32 / 255) as u8,
-            g: (ch[1] as u32 / 255) as u8,
-            b: (ch[2] as u32 / 255) as u8,
-            a: White((ch[3] as u32 / 255) as u8),
+            r: ch[0],
+            g: ch[1],
+            b: ch[2],
+            a: White(ch[3]),
         };
     }
 
@@ -96,9 +99,9 @@ fn tick_solid_color_rgb(port_config: EnabledPort, leds_output: &mut [RGB8; MAX_P
 
     for i in 0..port_config.pixel_count {
         leds_output[i] = RGB8 {
-            r: (ch[0] as u32 / 255) as u8,
-            g: (ch[1] as u32 / 255) as u8,
-            b: (ch[2] as u32 / 255) as u8
+            r: ch[0],
+            g: ch[1],
+            b: ch[2]
         };
     }
 

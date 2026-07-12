@@ -39,10 +39,10 @@ assign_resources! {
         pin4: PIN_41, // Analog
     },
     slot_c_neo: SlotCNeoResources {
-        pin1: PIN_15,
-        pin2: PIN_14,
-        pin3: PIN_9,
-        pin4: PIN_7,
+        pin1: PIN_15, // 4th Output (Dead on JST and Term Modules)
+        pin2: PIN_14, // 3rd Output
+        pin3: PIN_9, // 1st Output
+        pin4: PIN_7, // 2nd Output
         pio: PIO0,
         dma1: DMA_CH0,
         dma2: DMA_CH5,
