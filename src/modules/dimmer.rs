@@ -39,7 +39,7 @@ pub async fn dimmer_task(settings: DimmerConfig, r: SlotDDimmerResources) {
         pwm1.set_config(&cfg1);
         pwm2.set_config(&cfg2);
 
-        Timer::after(Duration::from_millis(10)).await;
+        Timer::after(Duration::from_millis(1)).await;
     }
     
 
