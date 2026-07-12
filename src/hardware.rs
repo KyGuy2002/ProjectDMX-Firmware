@@ -1,8 +1,11 @@
 use assign_resources::assign_resources;
+use embassy_rp::pio_programs::ws2812::PioWs2812Program;
 use embassy_rp::{peripherals, Peri};
 
 use embassy_rp::bind_interrupts;
-use embassy_rp::uart::{InterruptHandler};
+use embassy_rp::pio::InterruptHandler as PioInterruptHandler;
+use embassy_rp::uart::InterruptHandler as UartInterruptHandler;
+use static_cell::StaticCell;
 
 
 assign_resources! {
@@ -40,6 +43,11 @@ assign_resources! {
         pin2: PIN_14,
         pin3: PIN_9,
         pin4: PIN_7,
+        pio: PIO0,
+        dma1: DMA_CH0,
+        dma2: DMA_CH5,
+        dma3: DMA_CH6,
+        dma4: DMA_CH7,
     },
     slot_d_dimmer: SlotDDimmerResources {
         pin1: PIN_19, // 1B
@@ -55,5 +63,11 @@ assign_resources! {
 pub type EthSpi = peripherals::SPI1;
 
 bind_interrupts!(pub struct DmxIrqs {
-    UART1_IRQ => InterruptHandler<peripherals::UART1>;
+    UART1_IRQ => UartInterruptHandler<peripherals::UART1>;
 });
+
+bind_interrupts!(pub struct NeoIrqs {
+    PIO0_IRQ_0 => PioInterruptHandler<peripherals::PIO0>;
+});
+
+pub static NEO_PROGRAM: StaticCell<PioWs2812Program<peripherals::PIO0>> = StaticCell::new();
