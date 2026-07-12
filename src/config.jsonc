@@ -37,7 +37,7 @@
                 {
                     "protocol": "ws2812",
                     "color_order": "grb",
-                    "pixel_count": 240, // Each tube is 80 pixels - Max in main.rs is 300 pixels and 6 universes
+                    "pixel_count": 480, // Each tube is 80 pixels - Max in main.rs is 300 pixels and 6 universes
                     "universe": 3,
                     "start_channel": 0,
                     "mode": "raw"

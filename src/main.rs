@@ -38,8 +38,8 @@ use crate::hardware::*;
 pub static CONFIG: OnceLock<BoardInstanceConfig> = OnceLock::new();
 
 // Global DMX buffer
-pub const MAX_UNIVERSES: usize = 6;
-pub const MAX_PIXELS: usize = 300;
+pub const MAX_UNIVERSES: usize = 8;
+pub const MAX_PIXELS: usize = 500;
 
 pub static DMX_MATRIX: Mutex<CriticalSectionRawMutex, RefCell<[[u8; 512]; MAX_UNIVERSES]>> =
     Mutex::new(RefCell::new([[0u8; 512]; MAX_UNIVERSES]));
