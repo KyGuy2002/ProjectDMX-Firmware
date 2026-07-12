@@ -68,6 +68,9 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
             } else if port_config.mode == NeoMode::Generator2D {
                 tick_wire_effect_rgbw(port_config, &mut strip_1_effect_state, &layout_table, &mut leds_output_1);
             }
+            else if port_config.mode == NeoMode::Raw {
+                tick_raw_rgbw(port_config, &mut leds_output_1);
+            }
         }
 
         // Strip 3
@@ -78,6 +81,9 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
             } else if port_config.mode == NeoMode::Generator2D {
                 tick_wire_effect_rgb(port_config, &mut strip_3_effect_state, &layout_table, &mut leds_output_3);
             }
+            // else if port_config.mode == NeoMode::Raw {
+            //     tick_raw_rgb(port_config, &mut leds_output_3);
+            // }
             
         }
 
@@ -122,6 +128,31 @@ fn tick_solid_color_rgb(port_config: EnabledPort, leds_output: &mut [RGB8; MAX_P
             g: ch[1],
             b: ch[2]
         };
+    }
+
+}
+
+fn tick_raw_rgbw(port_config: EnabledPort, leds_output: &mut [RGBW<u8>; MAX_PIXELS]) {
+
+    let mut current_universe = port_config.universe as usize;
+    let mut current_channel = port_config.start_channel as usize;
+
+    for i in 0..port_config.pixel_count {
+
+        let dmx = read_channels::<4>(current_universe, current_channel);
+        current_channel += 4;
+        if current_channel >= 512 {
+            current_channel = 0;
+            current_universe += 1;
+        }
+
+        leds_output[i] = RGBW {
+            r: dmx[0],
+            g: dmx[1],
+            b: dmx[2],
+            a: White(dmx[3])
+        };
+
     }
 
 }

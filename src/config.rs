@@ -188,6 +188,7 @@ pub enum ColorOrder {
 pub enum NeoMode {
     SolidColor,
     Generator2D,
+    Raw,
 }
 
 // =========================================================================
