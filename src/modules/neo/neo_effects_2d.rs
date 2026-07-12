@@ -118,7 +118,7 @@ pub fn render_base_effect(
             // --- ADJUSTABLE TUNING VARIABLES ---
             let pulse_count = 3;   // Number of electrical pulses visible across the entire sign at once
             let pulse_width = 8;   // Total width of each pulse measured in pixels
-            let NUM_LEDS = 100;
+            let NUM_LEDS = 100; // TODO dont hardcode
             let speed_slowdown = 3;  // Higher = Slower pulse speed. (1 = default, 3 = three times slower)
             // -----------------------------------
 
