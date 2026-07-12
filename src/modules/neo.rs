@@ -48,6 +48,7 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
     // Setup effect state
     let layout_table = get_layout_map();
     let mut strip_3_effect_state = NeoEffectState::new();
+    let mut strip_1_effect_state = NeoEffectState::new();
 
 
 
@@ -61,13 +62,23 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
 
         // Strip 1
         if let Port::Enabled(port_config) = settings.ports[0] {
-            tick_solid_color_rgbw(port_config, &mut leds_output_1);
+
+            if port_config.mode == NeoMode::SolidColor {
+                tick_solid_color_rgbw(port_config, &mut leds_output_1);
+            } else if port_config.mode == NeoMode::Generator2D {
+                tick_wire_effect_rgbw(port_config, &mut strip_1_effect_state, &layout_table, &mut leds_output_1);
+            }
         }
 
         // Strip 3
         if let Port::Enabled(port_config) = settings.ports[2] {
-            // tick_solid_color_rgb(port_config, &mut leds_output_3);
-            tick_wire_effect_rgb(port_config, &mut strip_3_effect_state, &layout_table, &mut leds_output_3);
+
+            if port_config.mode == NeoMode::SolidColor {
+                tick_solid_color_rgb(port_config, &mut leds_output_3);
+            } else if port_config.mode == NeoMode::Generator2D {
+                tick_wire_effect_rgb(port_config, &mut strip_3_effect_state, &layout_table, &mut leds_output_3);
+            }
+            
         }
 
         
@@ -89,8 +100,6 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
 fn tick_solid_color_rgbw(port_config: EnabledPort, leds_output: &mut [RGBW<u8>; MAX_PIXELS]) {
 
     let ch = read_channels::<5>(port_config.universe as usize, port_config.start_channel as usize);
-
-    info!("{} {} {} {} {}", ch[0], ch[1], ch[2], ch[3], ch[4]);
 
     for i in 0..port_config.pixel_count {
         leds_output[i] = RGBW {

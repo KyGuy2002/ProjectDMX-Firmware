@@ -1,9 +1,35 @@
-use smart_leds::RGB8;
+use smart_leds::{RGB8, RGBW, White};
 
 use crate::{MAX_PIXELS, config::{EnabledPort}, read_channels};
 use crate::modules::neo::neo_effects_2d;
 use crate::pixel_mapping_config::PixelMeta;
 
+
+
+pub fn tick_wire_effect_rgbw(
+    port_config: EnabledPort,
+    state: &mut NeoEffectState,
+    layout_table: &[PixelMeta; MAX_PIXELS],
+    leds_output: &mut [RGBW<u8>; MAX_PIXELS],
+) {
+    let mut rgb_output = [RGB8::default(); MAX_PIXELS];
+
+    tick_wire_effect_rgb(
+        port_config,
+        state,
+        layout_table,
+        &mut rgb_output,
+    );
+
+    for i in 0..MAX_PIXELS {
+        leds_output[i] = RGBW {
+            r: rgb_output[i].r,
+            g: rgb_output[i].g,
+            b: rgb_output[i].b,
+            a: White(0),
+        };
+    }
+}
 
 
 

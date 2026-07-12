@@ -183,6 +183,13 @@ pub enum ColorOrder {
     Grbw,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NeoMode {
+    SolidColor,
+    Generator2D,
+}
+
 // =========================================================================
 // PORT PORTFOLIOS
 // =========================================================================
@@ -194,6 +201,7 @@ pub struct EnabledPort {
     pub pixel_count: usize,
     pub universe: u16,
     pub start_channel: u16,
+    pub mode: NeoMode,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Serialize)]
@@ -211,6 +219,7 @@ struct RawPort {
     pixel_count: Option<usize>,
     universe: Option<u16>,
     start_channel: Option<u16>,
+    mode: Option<NeoMode>,
 }
 
 impl<'de> Deserialize<'de> for Port {
@@ -230,6 +239,7 @@ impl<'de> Deserialize<'de> for Port {
             pixel_count: raw.pixel_count.ok_or_else(|| de::Error::missing_field("pixel_count"))?,
             universe: raw.universe.ok_or_else(|| de::Error::missing_field("universe"))?,
             start_channel: raw.start_channel.ok_or_else(|| de::Error::missing_field("start_channel"))?,
+            mode: raw.mode.ok_or_else(|| de::Error::missing_field("mode"))?,
         }))
     }
 }

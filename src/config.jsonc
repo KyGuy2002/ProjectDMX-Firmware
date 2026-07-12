@@ -24,7 +24,8 @@
                     "color_order": "rgbw",
                     "pixel_count": 10,
                     "universe": 2,
-                    "start_channel": 0
+                    "start_channel": 0,
+                    "mode": "solidcolor"
                 },
 
                 //
@@ -38,7 +39,8 @@
                     "color_order": "grb",
                     "pixel_count": 100,
                     "universe": 2,
-                    "start_channel": 10
+                    "start_channel": 10,
+                    "mode": "generator2d"
                 },
 
                 //
