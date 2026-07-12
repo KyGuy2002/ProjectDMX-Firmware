@@ -136,22 +136,20 @@ fn tick_solid_color_rgb(port_config: EnabledPort, leds_output: &mut [RGB8; MAX_P
 // Just rgb with fake white for now
 fn tick_raw_rgbw(port_config: EnabledPort, leds_output: &mut [RGBW<u8>; MAX_PIXELS]) {
 
-    // Get max universes needed
-    let universe_total = ((port_config.pixel_count * 3) + 510 - 1) / 510;
-
-    // Get all data
-    let mut universe_copy: Vec<u8, {MAX_PIXELS * 3}> = Vec::new();
-    for temp_u in 0..universe_total {
-        universe_copy.extend(read_channels::<510>(temp_u + port_config.universe as usize, 0));
-    }
-
     for i in 0..port_config.pixel_count {
 
+        let dmx_channel = port_config.start_channel as usize + (i * 3);
+
+        let ch = read_channels::<3>(
+            port_config.universe as usize,
+            dmx_channel,
+        );
+
         leds_output[i] = RGBW {
-            r: universe_copy[i * 3],
-            g: universe_copy[i * 3 + 1],
-            b: universe_copy[i * 3 + 2],
-            a: White(0)
+            r: ch[0],
+            g: ch[1],
+            b: ch[2],
+            a: White(0),
         };
 
     }
