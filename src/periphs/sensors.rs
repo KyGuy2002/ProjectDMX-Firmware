@@ -1,41 +1,42 @@
 use defmt::println;
 use embassy_net::Stack;
 use embassy_rp::gpio::{Input, Pull};
-use embassy_time::{Duration, Timer};
+use core::sync::atomic::{AtomicBool, Ordering};
+use embassy_time::Timer;
 
-use crate::hardware::{SensorResources};
+
+use crate::hardware::SensorResources;
+
+
+pub static BUTTON_STATUS: AtomicBool = AtomicBool::new(false);
 
 
 #[embassy_executor::task]
-pub async fn sensor_task(stack: Stack<'static>, r: SensorResources) {
-
+pub async fn sensor_task(_stack: Stack<'static>, r: SensorResources) {
     println!("Sensor task started.");
 
 
-    // Init pins
-    let mut sensor1 = Input::new(r.in1, Pull::None);
+    let mut sensor1 = Input::new(r.in1, Pull::Up);
 
-    
-    
+    let mut previous = sensor1.is_low();
+
+    BUTTON_STATUS.store(previous, Ordering::Relaxed);
+
 
     loop {
+
+        sensor1.wait_for_any_edge().await;
+
         
-        // Wait for the button pin to be pulled low (pressed)
-        sensor1.wait_for_falling_edge().await;
+        Timer::after_millis(20).await;
 
-        // Simple async debouncing delay
-        Timer::after(Duration::from_millis(30)).await;
+        let pressed = sensor1.is_low();
 
-        if sensor1.is_low() {
-            // Confirmed button press! Trigger the OSC send here.
-            println!("Sensor 1 pressed! Sending OSC message...");
-            
-            // Wait until button is released before continuing the loop
-            sensor1.wait_for_rising_edge().await;
-            Timer::after(Duration::from_millis(30)).await;
+        if pressed != previous {
+            previous = pressed;
+            BUTTON_STATUS.store(pressed, Ordering::Relaxed);
+            println!("Button: {}", pressed);
         }
 
     }
-
-
 }

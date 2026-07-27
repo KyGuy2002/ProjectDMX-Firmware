@@ -2,7 +2,8 @@ use embassy_rp::i2c::{self, Config};
 
 use embassy_time::{Duration, Timer};
 
-use crate::hardware::{OledIrqs, OledResources};
+use core::sync::atomic::Ordering;
+use crate::{hardware::{OledIrqs, OledResources}, periphs::sensors::BUTTON_STATUS};
 use core::fmt::Write;
 use embassy_net::Ipv4Address;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -11,10 +12,7 @@ use embassy_sync::mutex::Mutex as AsyncMutex;
 
 
 use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, MonoTextStyle},
-    pixelcolor::BinaryColor,
-    prelude::*,
-    text::Text,
+    mono_font::{MonoTextStyle, ascii::FONT_6X10}, pixelcolor::BinaryColor, prelude::*, primitives::Circle, text::Text,
 };
 use embedded_graphics::primitives::{Line, PrimitiveStyle};
 
@@ -78,6 +76,23 @@ pub async fn oled_task(r: OledResources, ip_state: &'static AsyncMutex<CriticalS
                 .ok();
         } else {
             Text::new("Connecting...", Point::new(28, 58), text_style)
+                .draw(&mut display)
+                .ok();
+        }
+
+
+
+
+        let pressed = BUTTON_STATUS.load(Ordering::Relaxed);
+
+        if !pressed {
+            Circle::new(Point::new(8, 8), 16)
+                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+                .draw(&mut display)
+                .ok();
+        } else {
+            Circle::new(Point::new(8, 8), 16)
+                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
                 .draw(&mut display)
                 .ok();
         }
