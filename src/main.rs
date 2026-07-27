@@ -16,6 +16,7 @@ mod periphs {
     pub mod artnet;
     pub mod oled;
     pub mod sensors;
+    pub mod tcp_cmds;
 }
 
 use core::cell::RefCell;
@@ -88,7 +89,8 @@ async fn main(spawner: Spawner) {
     if config.input.source == InputProtocol::Artnet {
         let stack = periphs::eth::start_eth(&spawner, r.eth, ip_state).await; // Ethernet
         spawner.spawn(periphs::artnet::artnet_task(stack)).unwrap(); // ArtNet
-        spawner.spawn(periphs::sensors::sensor_task(stack, r.sensors)).unwrap(); // Sensors
+        spawner.spawn(periphs::sensors::sensor_task(r.sensors)).unwrap(); // Sensors
+        spawner.spawn(periphs::tcp_cmds::tcp_cmds_task(stack)).unwrap(); // TCP Commands
     }
 
 

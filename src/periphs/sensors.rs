@@ -12,7 +12,7 @@ pub static BUTTON_STATUS: AtomicBool = AtomicBool::new(false);
 
 
 #[embassy_executor::task]
-pub async fn sensor_task(_stack: Stack<'static>, r: SensorResources) {
+pub async fn sensor_task(r: SensorResources) {
     println!("Sensor task started.");
 
 
@@ -35,7 +35,6 @@ pub async fn sensor_task(_stack: Stack<'static>, r: SensorResources) {
         if pressed != previous {
             previous = pressed;
             BUTTON_STATUS.store(pressed, Ordering::Relaxed);
-            println!("Button: {}", pressed);
         }
 
     }
