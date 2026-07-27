@@ -4,8 +4,7 @@ use embassy_rp::gpio::{Input, Pull};
 use core::sync::atomic::{AtomicBool, Ordering};
 use embassy_time::Timer;
 
-
-pub static BUTTON_STATUS: AtomicBool = AtomicBool::new(false);
+use crate::periphs::sensors::BUTTON_STATUS;
 
 #[embassy_executor::task]
 pub async fn tcp_cmds_task(stack: Stack<'static>) {
@@ -32,7 +31,7 @@ pub async fn tcp_cmds_task(stack: Stack<'static>) {
             continue;
         }
 
-        info!("=== Connected safely! Awaiting switch updates...");
+        info!("Connected safely! Awaiting switch updates...");
 
         loop {
             // Read the current atomic state updated by your hardware interrupts/GPIO
