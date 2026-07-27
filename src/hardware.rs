@@ -32,6 +32,14 @@ assign_resources! {
         scl: PIN_27, // Used to be 39 but pcb routing error
         i2c: I2C1,
     },
+    sensors: SensorResources {
+        in1: PIN_42,
+        in2: PIN_43,
+        in3: PIN_44,
+        in4: PIN_46,
+        in5: PIN_45,
+        in6: PIN_47,
+    },
     slot_a_relay: SlotARelayResources {
         pin1: PIN_4,
         pin2: PIN_3,
