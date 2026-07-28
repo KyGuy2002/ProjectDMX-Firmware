@@ -23,7 +23,7 @@ embassy-rp = { version = "0.9", features = ["rt", "rp235xb", "time-driver", "bin
 embassy-time = { version = "0.5" }
 embassy-sync = { version = "0.7" }
 embassy-futures = { version = "0.1" }
-embassy-net = { version = "0.9", features = ["tcp", "dhcpv4", "udp", "medium-ethernet", "defmt"] }
+embassy-net = { version = "0.9", features = ["tcp", "dhcpv4", "udp", "medium-ethernet", "defmt", "multicast"] }
 embassy-net-wiznet = { version = "0.3" }
 embedded-hal = "1.0"
 embedded-hal-async = "1.0"

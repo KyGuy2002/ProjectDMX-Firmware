@@ -14,6 +14,7 @@ mod periphs {
     pub mod dmx;
     pub mod eth;
     pub mod artnet;
+    pub mod sacn;
     pub mod oled;
     pub mod sensors;
     pub mod tcp_cmds;
@@ -44,7 +45,7 @@ use crate::hardware::*;
 pub static CONFIG: OnceLock<BoardInstanceConfig> = OnceLock::new();
 
 // Global DMX buffer
-pub const MAX_UNIVERSES: usize = 8;
+pub const MAX_UNIVERSES: usize = 4;
 pub const MAX_PIXELS: usize = 500;
 
 pub static DMX_MATRIX: BlockingMutex<CriticalSectionRawMutex, RefCell<[[u8; 512]; MAX_UNIVERSES]>> =
@@ -86,11 +87,16 @@ async fn main(spawner: Spawner) {
     let ip_state = IP_STATE.init(AsyncMutex::new(None));
     spawner.spawn(periphs::oled::oled_task(r.oled, ip_state)).unwrap(); // OLED
     spawner.spawn(periphs::dmx::dmx_task(r.dmx)).unwrap(); // DMX
-    if config.input.source == InputProtocol::Artnet {
+    if config.input.source == InputProtocol::Artnet || config.input.source == InputProtocol::sACN {
         let stack = periphs::eth::start_eth(&spawner, r.eth, ip_state).await; // Ethernet
-        spawner.spawn(periphs::artnet::artnet_task(stack)).unwrap(); // ArtNet
         spawner.spawn(periphs::sensors::sensor_task(r.sensors)).unwrap(); // Sensors
         spawner.spawn(periphs::tcp_cmds::tcp_cmds_task(stack)).unwrap(); // TCP Commands
+
+        if config.input.source == InputProtocol::Artnet {
+            spawner.spawn(periphs::artnet::artnet_task(stack)).unwrap(); // Art-Net
+        } else if config.input.source == InputProtocol::sACN {
+            spawner.spawn(periphs::sacn::sacn_task(stack)).unwrap(); // sACN
+        }
     }
 
 

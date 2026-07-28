@@ -22,6 +22,7 @@ pub fn load_config() -> BoardInstanceConfig {
     let input_str = match config.input.source {
         InputProtocol::Dmx => "DMX",
         InputProtocol::Artnet => "Art-Net",
+        InputProtocol::sACN => "sACN",
         InputProtocol::Sd => "SD Card",
     };
 
@@ -150,6 +151,7 @@ fn get_module_str(module_slot: ModuleSlot) -> &'static str {
 pub enum InputProtocol {
     Dmx,
     Artnet,
+    sACN,
     Sd,
 }
 
