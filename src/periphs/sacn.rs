@@ -2,7 +2,6 @@ use defmt::{info, warn};
 
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{Ipv4Address, Stack};
-use embassy_time::Instant;
 use static_cell::StaticCell;
 
 use crate::{DMX_MATRIX, MAX_UNIVERSES};
@@ -14,10 +13,6 @@ const ACN_PACKET_IDENTIFIER: &[u8; 12] = b"ASC-E1.17\0\0\0";
 // Too large creates old-packet backlog.
 const UDP_RX_PACKET_COUNT: usize = 8;
 const UDP_RX_BUF_SIZE: usize = UDP_RX_PACKET_COUNT * 640;
-
-// sACN universes are one-based.
-// Universe 4 is stored in DMX_MATRIX[4].
-const DEBUG_PIXEL_UNIVERSE: usize = 4;
 
 // E1.31 packet offsets.
 const ROOT_VECTOR_OFFSET: usize = 18;
@@ -200,20 +195,17 @@ pub async fn sacn_task(stack: Stack<'static>) -> ! {
     socket.bind(SACN_PORT).unwrap();
 
     // Join the multicast address for every firmware universe.
-    //
-    // Universe zero is invalid in sACN, so begin at one.
-    for universe in 1..MAX_UNIVERSES {
-        let multicast_address = sacn_multicast_address(universe);
-
+    for sacn_universe in 1..=MAX_UNIVERSES {
+        let multicast_address = sacn_multicast_address(sacn_universe);
         match stack.join_multicast_group(multicast_address) {
             Ok(()) => {
-                info!("Joined sACN universe {}", universe);
+                info!("Joined sACN universe {}", sacn_universe);
             }
 
             Err(e) => {
                 warn!(
                     "Failed to join sACN universe {}: {:?}",
-                    universe,
+                    sacn_universe,
                     e
                 );
             }
@@ -233,8 +225,6 @@ pub async fn sacn_task(stack: Stack<'static>) -> ! {
 
     let mut universe_priority = [0u8; MAX_UNIVERSES];
 
-    let mut last_print = Instant::now();
-
     loop {
         match socket.recv_from(&mut packet).await {
             Ok((len, _endpoint)) => {
@@ -242,9 +232,11 @@ pub async fn sacn_task(stack: Stack<'static>) -> ! {
                     continue;
                 };
 
-                if sacn.universe >= MAX_UNIVERSES {
+                if sacn.universe == 0 || sacn.universe > MAX_UNIVERSES {
                     continue;
                 }
+
+                let internal_universe = sacn.universe - 1;
 
                 // Preview packets should not drive live output.
                 if sacn.preview {
@@ -253,12 +245,12 @@ pub async fn sacn_task(stack: Stack<'static>) -> ! {
 
                 // A terminated stream is no longer active.
                 if sacn.terminated {
-                    universe_priority[sacn.universe] = 0;
-                    last_sequence[sacn.universe] = 0;
+                    universe_priority[internal_universe] = 0;
+                    last_sequence[internal_universe] = 0;
 
                     DMX_MATRIX.lock(|matrix| {
                         let mut matrix = matrix.borrow_mut();
-                        matrix[sacn.universe].fill(0);
+                        matrix[internal_universe].fill(0);
                     });
 
                     continue;
@@ -266,27 +258,27 @@ pub async fn sacn_task(stack: Stack<'static>) -> ! {
 
                 // Ignore a source with lower priority than the currently
                 // accepted stream for this universe.
-                if sacn.priority < universe_priority[sacn.universe] {
+                if sacn.priority < universe_priority[internal_universe] {
                     continue;
                 }
 
                 // Reset sequence tracking when a higher-priority stream wins.
-                if sacn.priority > universe_priority[sacn.universe] {
-                    universe_priority[sacn.universe] = sacn.priority;
-                    last_sequence[sacn.universe] = 0;
+                if sacn.priority > universe_priority[internal_universe] {
+                    universe_priority[internal_universe] = sacn.priority;
+                    last_sequence[internal_universe] = 0;
                 }
 
-                if last_sequence[sacn.universe] != 0 {
+                if last_sequence[internal_universe] != 0 {
                     let expected =
-                        last_sequence[sacn.universe].wrapping_add(1);
+                        last_sequence[internal_universe].wrapping_add(1);
 
                     if sacn.sequence != expected {
-                        sequence_jumps[sacn.universe] =
-                            sequence_jumps[sacn.universe].wrapping_add(1);
+                        sequence_jumps[internal_universe] =
+                            sequence_jumps[internal_universe].wrapping_add(1);
                     }
                 }
 
-                last_sequence[sacn.universe] = sacn.sequence;
+                last_sequence[internal_universe] = sacn.sequence;
 
                 let copy_len = sacn.dmx.len();
                 let first_value = sacn.dmx[0];
@@ -294,62 +286,26 @@ pub async fn sacn_task(stack: Stack<'static>) -> ! {
                 DMX_MATRIX.lock(|matrix| {
                     let mut matrix = matrix.borrow_mut();
 
-                    matrix[sacn.universe][0..copy_len]
+                    matrix[internal_universe][0..copy_len]
                         .copy_from_slice(sacn.dmx);
 
                     // Clear old channel values if a shorter packet arrives.
                     if copy_len < 512 {
-                        matrix[sacn.universe][copy_len..512].fill(0);
+                        matrix[internal_universe][copy_len..512].fill(0);
                     }
                 });
 
-                universe_counts[sacn.universe] =
-                    universe_counts[sacn.universe].wrapping_add(1);
+                universe_counts[internal_universe] =
+                    universe_counts[internal_universe].wrapping_add(1);
 
-                if first_value != universe_last_values[sacn.universe] {
-                    universe_last_values[sacn.universe] = first_value;
+                if first_value != universe_last_values[internal_universe] {
+                    universe_last_values[internal_universe] = first_value;
 
-                    universe_changes[sacn.universe] =
-                        universe_changes[sacn.universe].wrapping_add(1);
+                    universe_changes[internal_universe] =
+                        universe_changes[internal_universe].wrapping_add(1);
                 }
 
-                if last_print.elapsed().as_millis() >= 1000 {
-                    if DEBUG_PIXEL_UNIVERSE < MAX_UNIVERSES {
-                        info!(
-                            "pps u0={} upix={}",
-                            universe_counts[0],
-                            universe_counts[DEBUG_PIXEL_UNIVERSE],
-                        );
-
-                        info!(
-                            "chg u0={} upix={} vals u0={} upix={}",
-                            universe_changes[0],
-                            universe_changes[DEBUG_PIXEL_UNIVERSE],
-                            universe_last_values[0],
-                            universe_last_values[DEBUG_PIXEL_UNIVERSE],
-                        );
-
-                        info!(
-                            "seqjump u0={} upix={}",
-                            sequence_jumps[0],
-                            sequence_jumps[DEBUG_PIXEL_UNIVERSE],
-                        );
-                    } else {
-                        warn!(
-                            "DEBUG_PIXEL_UNIVERSE {} >= MAX_UNIVERSES {}",
-                            DEBUG_PIXEL_UNIVERSE,
-                            MAX_UNIVERSES,
-                        );
-                    }
-
-                    for i in 0..MAX_UNIVERSES {
-                        universe_counts[i] = 0;
-                        universe_changes[i] = 0;
-                        sequence_jumps[i] = 0;
-                    }
-
-                    last_print = Instant::now();
-                }
+                
             }
 
             Err(e) => {

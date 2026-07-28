@@ -8,7 +8,7 @@
     "modules": {
         "slot_a": {
             "type": "fog_machine",
-            "universe": 1,
+            "universe": 0,
             "start_channel": 4
         },
         "slot_b": {
@@ -23,7 +23,7 @@
                     "protocol": "ws2812",
                     "color_order": "rgbw",
                     "pixel_count": 10,
-                    "universe": 2,
+                    "universe": 0,
                     "start_channel": 0,
                     "mode": "raw"
                 },
