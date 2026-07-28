@@ -133,23 +133,22 @@ fn parse_sacn_packet(packet: &[u8]) -> Option<SacnPacket<'_>> {
         return None;
     }
 
-    let required_len = START_CODE_OFFSET.checked_add(property_count)?;
-
-    if packet.len() < required_len {
-        return None;
-    }
-
     // Only standard DMX start code is handled.
     if packet[START_CODE_OFFSET] != 0 {
         return None;
     }
 
-    let dmx_len = (property_count - 1).min(512);
-    let dmx_end = DMX_DATA_OFFSET.checked_add(dmx_len)?;
+    // Some senders advertise 513 properties but omit unused trailing slots.
+    // Use the number of DMX bytes actually present in the UDP packet.
+    let available_dmx_len = packet.len().saturating_sub(DMX_DATA_OFFSET);
+    let advertised_dmx_len = property_count - 1;
+    let dmx_len = available_dmx_len.min(advertised_dmx_len).min(512);
 
-    if dmx_end > packet.len() {
+    if dmx_len == 0 {
         return None;
     }
+
+    let dmx_end = DMX_DATA_OFFSET + dmx_len;
 
     let options = packet[OPTIONS_OFFSET];
 
