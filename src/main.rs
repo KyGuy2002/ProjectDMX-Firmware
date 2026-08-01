@@ -18,6 +18,7 @@ mod periphs {
     pub mod oled;
     pub mod sensors;
     pub mod tcp_cmds;
+    pub mod sd;
 }
 
 use core::cell::RefCell;
@@ -87,6 +88,9 @@ async fn main(spawner: Spawner) {
     let ip_state = IP_STATE.init(AsyncMutex::new(None));
     spawner.spawn(periphs::oled::oled_task(r.oled, ip_state)).unwrap(); // OLED
     spawner.spawn(periphs::dmx::dmx_task(r.dmx)).unwrap(); // DMX
+    spawner.spawn(periphs::sd::sd_task(r.sd)).unwrap(); // SD
+
+
     if config.input.source == InputProtocol::Artnet || config.input.source == InputProtocol::sACN {
         let stack = periphs::eth::start_eth(&spawner, r.eth, ip_state).await; // Ethernet
         spawner.spawn(periphs::sensors::sensor_task(r.sensors)).unwrap(); // Sensors

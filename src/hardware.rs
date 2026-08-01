@@ -40,6 +40,19 @@ assign_resources! {
         in5: PIN_45,
         in6: PIN_47,
     },
+    audio: AudioResources {
+        // NOTE: LCK/WS MUST BE BCK+1 (one more than BCK) [lck > bck]
+        din: PIN_20,
+        bck: PIN_21,
+        lck: PIN_22,
+    },
+    sd: SdResources {
+        sck: PIN_34,
+        mosi: PIN_35,
+        miso: PIN_36,
+        cs: PIN_37,
+        spi: SPI0,
+    },
     slot_a_relay: SlotARelayResources {
         pin1: PIN_4,
         pin2: PIN_3,
