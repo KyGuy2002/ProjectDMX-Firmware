@@ -133,7 +133,7 @@ fn tick_solid_color_rgb(port_config: EnabledPort, leds_output: &mut [RGB8; MAX_P
 
 }
 
-// Just rgb with fake white for now
+
 fn tick_raw_rgbw(port_config: EnabledPort, leds_output: &mut [RGBW<u8>; MAX_PIXELS]) {
 
     let mut current_universe = port_config.universe as usize;
@@ -141,8 +141,8 @@ fn tick_raw_rgbw(port_config: EnabledPort, leds_output: &mut [RGBW<u8>; MAX_PIXE
 
     for i in 0..port_config.pixel_count {
 
-        let dmx = read_channels::<3>(current_universe, current_channel);
-        current_channel += 3;
+        let dmx = read_channels::<4>(current_universe, current_channel);
+        current_channel += 4;
         if current_channel >= 512 {
             current_channel = 0;
             current_universe += 1;
@@ -152,7 +152,7 @@ fn tick_raw_rgbw(port_config: EnabledPort, leds_output: &mut [RGBW<u8>; MAX_PIXE
             r: dmx[0],
             g: dmx[1],
             b: dmx[2],
-            a: White(0)
+            a: White(dmx[3])
         };
 
     }

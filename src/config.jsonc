@@ -18,25 +18,10 @@
             "type": "neo",
             "ports": [
 
-                // Alibaba Uplights
-                {
-                    "protocol": "ws2812",
-                    "color_order": "rgbw",
-                    "pixel_count": 10,
-                    "universe": 0,
-                    "start_channel": 0,
-                    "mode": "raw"
-                },
-
-                //
-                {
-                    "disabled": true
-                },
-
                 // Switched Lights Puzzle
                 {
-                    "protocol": "ws2812",
-                    "color_order": "grb",
+                    "protocol": "sk6812",
+                    "color_order": "rgbw",
                     "pixel_count": 6,
                     "universe": 2,
                     "start_channel": 0,
@@ -46,7 +31,19 @@
                 //
                 {
                     "disabled": true
+                },
+
+                {
+                    "disabled": true
+                },
+                
+
+                //
+                {
+                    "disabled": true
                 }
+
+                
 
             ]
         },
