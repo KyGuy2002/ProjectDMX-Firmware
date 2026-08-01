@@ -46,7 +46,7 @@ pub static CONFIG: OnceLock<BoardInstanceConfig> = OnceLock::new();
 
 // Global DMX buffer
 pub const MAX_UNIVERSES: usize = 4;
-pub const MAX_PIXELS: usize = 500;
+pub const MAX_PIXELS: usize = 80;
 
 pub static DMX_MATRIX: BlockingMutex<CriticalSectionRawMutex, RefCell<[[u8; 512]; MAX_UNIVERSES]>> =
     BlockingMutex::new(RefCell::new([[0u8; 512]; MAX_UNIVERSES]));
