@@ -25,7 +25,7 @@
                     "pixel_count": 6,
                     "universe": 2,
                     "start_channel": 0,
-                    "mode": "raw"
+                    "mode": "generator2d"
                 },
 
                 //
@@ -33,8 +33,14 @@
                     "disabled": true
                 },
 
+                // Glowing Wire
                 {
-                    "disabled": true
+                    "protocol": "ws2812",
+                    "color_order": "grb",
+                    "pixel_count": 80,
+                    "universe": 1,
+                    "start_channel": 0,
+                    "mode": "generator2d"
                 },
                 
 

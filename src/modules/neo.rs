@@ -54,7 +54,7 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
 
 
     // Setup ticker
-    let mut ticker = Ticker::every(Duration::from_millis(10)); // Clean ~50FPS Refresh rate
+    let mut ticker = Ticker::every(Duration::from_millis(20)); // Clean ~50FPS Refresh rate
 
 
 
