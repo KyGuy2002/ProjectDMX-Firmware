@@ -17,17 +17,32 @@ use crate::read_channels;
 const AUDIO_SAMPLE_RATE: u32 = 44100;
 
 // Playback volume (0.0 - 1.0)
-const VOLUME: f32 = 0.5;
+const VOLUME: f32 = 0.1;
 
 // 2 idle voices + 2 effect voices, each possibly with one more fading out during a
-// file-change transition = up to 8 concurrent decode streams in the worst case.
-const MAX_VOICES: usize = 8;
+// file-change transition = up to 8 concurrent decode streams in the worst case, but
+// that's a lot of RAM (nanomp3's Decoder alone is ~6.5KB - MDCT/QMF history buffers,
+// not "small" state - so each voice is ~15KB just from Decoder+mp3_buf+carry). 6 covers
+// both idle+effect fully switching at once (4 new + 2 of the 4 old still fading) at a
+// more sustainable footprint; the rarer case of *both* pairs transitioning with full
+// independent-then-diverging overlap could in theory want more than 6, in which case a
+// voice request just silently doesn't get a slot rather than crashing.
+const MAX_VOICES: usize = 6;
 
 // ~300ms fade-out on file change, at AUDIO_SAMPLE_RATE (300ms * 44100 = 13230 samples)
 const FADE_STEP: f32 = 1.0 / 13230.0;
 
 const MAX_FRAME_SAMPLES: usize = MAX_SAMPLES_PER_FRAME / 2; // 1152 (mono)
+
+// Per-voice MP3 read buffer. Only refilled once it drops below the threshold (not
+// "whenever it isn't completely full") so each SD read pulls a worthwhile chunk
+// instead of topping up by a couple hundred bytes almost every decoded frame - each
+// read pays a fixed per-transaction cost (at least a full sector fetch) regardless of
+// how little was actually requested, and with several voices decoding at once those
+// costs stack up fast. The threshold stays well above one MP3 frame's worst-case size
+// (~1KB) so decode is never actually starved by refilling "too late".
 const VOICE_MP3_BUF_SIZE: usize = 4 * 1024;
+const VOICE_MP3_BUF_REFILL_THRESHOLD: usize = 2 * 1024;
 
 // Frames mixed per I2S DMA transfer (double buffered) - also the yield granularity,
 // so other tasks (OLED/DMX/etc) get scheduled roughly every MAX_FRAME_SAMPLES worth of audio.
@@ -116,7 +131,7 @@ impl Voice {
         let mut rewound = false;
 
         loop {
-            if !eof && self.buf_len < VOICE_MP3_BUF_SIZE {
+            if !eof && self.buf_len < VOICE_MP3_BUF_REFILL_THRESHOLD {
                 match self.file.read(&mut self.mp3_buf[self.buf_len..]) {
                     Ok(0) => eof = true,
                     Ok(n) => self.buf_len += n,
@@ -147,6 +162,18 @@ impl Voice {
                     // valid frame - skip a byte to resync rather than getting stuck.
                     consumed = 1;
                 } else {
+                    // Decode needs more bytes than are currently buffered, even though
+                    // we're above the normal (batched) refill threshold. Force a top-up
+                    // now - without this, buf_len sits in the gap between the refill
+                    // threshold and VOICE_MP3_BUF_SIZE forever, decode() keeps seeing the
+                    // exact same input and returning the exact same "need more" result,
+                    // and this loop never terminates (no state changes, no yield point -
+                    // a full, permanent executor freeze, not just a stutter).
+                    match self.file.read(&mut self.mp3_buf[self.buf_len..]) {
+                        Ok(0) => eof = true,
+                        Ok(n) => self.buf_len += n,
+                        Err(_) => eof = true,
+                    }
                     continue;
                 }
             }

@@ -4,12 +4,19 @@ use serde::de::{self, Deserializer};
 
 use defmt::info;
 
-const MAX_CONFIG_LEN: usize = 16384;
+const MAX_CONFIG_LEN: usize = 10240;
 
-// Max number of one-shot/loop slots addressable via a single DMX channel's value
-// (1-127 = one-shot index, 128-255 = loop index)
-pub const MAX_AUDIO_FILES: usize = 128;
-pub const MAX_FILENAME_LEN: usize = 32;
+// Max number of entries per audio file list. `BoardInstanceConfig` (which embeds two
+// of these Vecs, always at full fixed capacity regardless of how many entries are
+// actually used) gets copied through several stack frames during boot - parsed by
+// serde_json_core, returned from load_config(), then cloned into CONFIG - all before
+// the first `await`, so it's on the real hardware stack rather than an embassy task's
+// static storage. Setting this too high (128 was tried and silently hard-faulted the
+// board on boot, no panic - classic stack overflow) blows that budget. 32 is already
+// far more than most rigs need; the DMX 1-127/128-255 value range still addresses
+// only the first 32 as a result - bump this (and watch stack usage) if you need more.
+pub const MAX_AUDIO_FILES: usize = 32;
+pub const MAX_FILENAME_LEN: usize = 24;
 
 /**
  * Loads the configuration from the embedded `config.jsonc` file and returns a `BoardInstanceConfig` struct.
