@@ -37,7 +37,7 @@ const MAX_FRAME_SAMPLES: usize = MAX_SAMPLES_PER_FRAME / 2;
 // while the previous batch is still being played out over I2S/DMA - without this, every
 // single ~26ms frame would need to be decoded and handed off inside the tiny (8 word)
 // PIO TX FIFO's margin, and any SD read/decode hiccup would audibly glitch the output.
-const FRAMES_PER_BATCH: usize = 6;
+const FRAMES_PER_BATCH: usize = 16;
 const OUT_BUF_LEN: usize = MAX_FRAME_SAMPLES * FRAMES_PER_BATCH;
 
 

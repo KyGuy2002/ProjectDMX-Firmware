@@ -28,7 +28,10 @@ use ssd1306::{
 pub async fn oled_task(r: OledResources, ip_state: &'static AsyncMutex<CriticalSectionRawMutex, Option<Ipv4Address>>) {
     
     let mut config = Config::default();
-    config.frequency = 400_000;
+    // 400kHz made each blocking flush() (~1KB framebuffer) take ~23ms, fully stalling
+    // the cooperative executor (incl. audio playback) each time. Most SSD1306 modules
+    // support Fast Mode Plus (1MHz), which cuts that down to ~5-6ms.
+    config.frequency = 1_000_000;
 
     let i2c = i2c::I2c::new_async(
         r.i2c,
