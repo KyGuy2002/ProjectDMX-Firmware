@@ -10,7 +10,7 @@ use embedded_hal_bus::spi::ExclusiveDevice;
 use embassy_rp::gpio::{Level, Output};
 
 // For SdCard
-use embedded_sdmmc::{Mode, SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
+use embedded_sdmmc::{BlockDevice, File, Mode, SdCard, VolumeIdx, VolumeManager};
 
 // For I2S audio output
 use embassy_futures::yield_now;
@@ -27,7 +27,18 @@ const MP3_PATH: &str = "test.mp3";
 const DEFAULT_VOLUME: f32 = 0.5;
 
 // MP3 bitstream read buffer. Topped back up from the SD card whenever it isn't full.
-const MP3_BUF_SIZE: usize = 8 * 1024;
+const MP3_BUF_SIZE: usize = 16 * 1024;
+
+// Max samples per channel in a single decoded MP3 frame
+const MAX_FRAME_SAMPLES: usize = MAX_SAMPLES_PER_FRAME / 2;
+
+// Number of decoded MP3 frames batched into each I2S DMA transfer. Two buffers of this
+// size are used (double buffered) so the next batch can be decoded from the SD card
+// while the previous batch is still being played out over I2S/DMA - without this, every
+// single ~26ms frame would need to be decoded and handed off inside the tiny (8 word)
+// PIO TX FIFO's margin, and any SD read/decode hiccup would audibly glitch the output.
+const FRAMES_PER_BATCH: usize = 6;
+const OUT_BUF_LEN: usize = MAX_FRAME_SAMPLES * FRAMES_PER_BATCH;
 
 
 // Dummy Clock structure for embedded-sdmmc
@@ -82,20 +93,19 @@ pub async fn sd_task(r: SdResources, audio: AudioResources) {
 
     let mut decoder = Decoder::new();
     let mut pcm = [0f32; MAX_SAMPLES_PER_FRAME];
-    let mut out = [0u32; MAX_SAMPLES_PER_FRAME / 2];
-
     let mut mp3_buf = [0u8; MP3_BUF_SIZE];
     let mut buf_len = 0usize;
-    let mut eof = false;
 
     // Prime the decoder: read/decode until the first real MP3 frame is found so we
-    // know the sample rate (bit depth is always 16 for our I2S output).
+    // know the sample rate (bit depth is always 16 for our I2S output). The first
+    // decoded frame itself is discarded for simplicity (~26ms).
+    let mut primed_eof = false;
     let sample_rate = loop {
-        if !eof && buf_len < MP3_BUF_SIZE {
+        if !primed_eof && buf_len < MP3_BUF_SIZE {
             match mp3_file.read(&mut mp3_buf[buf_len..]) {
-                Ok(0) => eof = true,
+                Ok(0) => primed_eof = true,
                 Ok(n) => buf_len += n,
-                Err(_) => eof = true,
+                Err(_) => primed_eof = true,
             }
         }
 
@@ -106,11 +116,10 @@ pub async fn sd_task(r: SdResources, audio: AudioResources) {
         let (mut consumed, info) = decoder.decode(&mp3_buf[..buf_len], &mut pcm);
 
         if consumed == 0 && info.is_none() {
-            if eof || buf_len >= MP3_BUF_SIZE {
+            if primed_eof || buf_len >= MP3_BUF_SIZE {
                 // Buffer is as full as it'll get and still no valid frame - skip a byte to resync
                 consumed = 1;
             } else {
-                // Not enough data buffered yet to decide - wait for more
                 yield_now().await;
                 continue;
             }
@@ -139,43 +148,88 @@ pub async fn sd_task(r: SdResources, audio: AudioResources) {
         &i2s_program,
     );
 
+    // Double-buffered playback: while one buffer is being streamed out over DMA, the
+    // other is filled with the next batch of decoded audio, so the two overlap instead
+    // of leaving the tiny PIO TX FIFO to starve between transfers.
+    let mut buf_a = [0u32; OUT_BUF_LEN];
+    let mut buf_b = [0u32; OUT_BUF_LEN];
+
+    // Each `Transfer` is started and fully awaited (via `join`, concurrently with
+    // decoding the *other* buffer) within a single statement, rather than being
+    // stashed in a variable that persists across loop iterations - `Transfer` has a
+    // `Drop` impl, so the borrow checker requires any binding holding one to stay
+    // valid through every possible drop point (including panic-unwind at the end of
+    // the function), which it can't prove when the same variable alternates between
+    // borrowing buf_a and buf_b across iterations.
+    let mut len_a = fill_batch(&mp3_file, &mut decoder, &mut pcm, &mut mp3_buf, &mut buf_len, &mut buf_a);
+
     loop {
-        // Top up the read buffer from the SD card
-        if !eof && buf_len < MP3_BUF_SIZE {
-            match mp3_file.read(&mut mp3_buf[buf_len..]) {
+        // Play buf_a out over I2S/DMA while decoding the next batch into buf_b
+        let (_, len_b) = embassy_futures::join::join(
+            i2s.write(&buf_a[..len_a]),
+            async { fill_batch(&mp3_file, &mut decoder, &mut pcm, &mut mp3_buf, &mut buf_len, &mut buf_b) },
+        ).await;
+
+        // Play buf_b out over I2S/DMA while decoding the next batch into buf_a
+        let (_, next_len_a) = embassy_futures::join::join(
+            i2s.write(&buf_b[..len_b]),
+            async { fill_batch(&mp3_file, &mut decoder, &mut pcm, &mut mp3_buf, &mut buf_len, &mut buf_a) },
+        ).await;
+        len_a = next_len_a;
+    }
+}
+
+/// Refills `mp3_buf` from `file` as needed and decodes MP3 frames into `out` (as
+/// interleaved 16-bit stereo `u32` words: left channel in the high 16 bits, right
+/// channel in the low 16 bits) until it can't fit another frame. Transparently loops
+/// back to the start of the file at EOF so playback is seamless. Returns the number
+/// of stereo samples written to `out`.
+fn fill_batch<D, T, const MAX_DIRS: usize, const MAX_FILES: usize, const MAX_VOLUMES: usize>(
+    file: &File<D, T, MAX_DIRS, MAX_FILES, MAX_VOLUMES>,
+    decoder: &mut Decoder,
+    pcm: &mut [f32; MAX_SAMPLES_PER_FRAME],
+    mp3_buf: &mut [u8; MP3_BUF_SIZE],
+    buf_len: &mut usize,
+    out: &mut [u32],
+) -> usize
+where
+    D: BlockDevice,
+    T: embedded_sdmmc::TimeSource,
+{
+    let mut out_len = 0usize;
+    let mut eof = false;
+
+    while out_len + MAX_FRAME_SAMPLES <= out.len() {
+        if !eof && *buf_len < MP3_BUF_SIZE {
+            match file.read(&mut mp3_buf[*buf_len..]) {
                 Ok(0) => eof = true,
-                Ok(n) => buf_len += n,
+                Ok(n) => *buf_len += n,
                 Err(_) => eof = true,
             }
         }
 
-        if buf_len == 0 {
+        if *buf_len == 0 {
             if eof {
-                // End of file reached - loop the track from the start
                 println!("Playback complete, restarting {}", MP3_PATH);
-                mp3_file.seek_from_start(0).expect("failed to rewind mp3 file");
+                file.seek_from_start(0).expect("failed to rewind mp3 file");
                 eof = false;
             }
-
-            yield_now().await;
             continue;
         }
 
-        let (mut consumed, info) = decoder.decode(&mp3_buf[..buf_len], &mut pcm);
+        let (mut consumed, info) = decoder.decode(&mp3_buf[..*buf_len], pcm);
 
         if consumed == 0 && info.is_none() {
-            if eof || buf_len >= MP3_BUF_SIZE {
+            if eof || *buf_len >= MP3_BUF_SIZE {
                 // Buffer is as full as it'll get and still no valid frame - skip a byte to resync
                 consumed = 1;
             } else {
-                // Not enough data buffered yet to decide - wait for more
-                yield_now().await;
                 continue;
             }
         }
 
-        mp3_buf.copy_within(consumed..buf_len, 0);
-        buf_len -= consumed;
+        mp3_buf.copy_within(consumed..*buf_len, 0);
+        *buf_len -= consumed;
 
         if let Some(info) = info {
             let channels = info.channels.num() as usize;
@@ -188,10 +242,12 @@ pub async fn sd_task(r: SdResources, audio: AudioResources) {
                 let l16 = (l * DEFAULT_VOLUME * 32767.0) as i32 as i16 as u16;
                 let r16 = (r * DEFAULT_VOLUME * 32767.0) as i32 as i16 as u16;
 
-                out[i] = ((l16 as u32) << 16) | (r16 as u32);
+                out[out_len + i] = ((l16 as u32) << 16) | (r16 as u32);
             }
 
-            i2s.write(&out[..frame_count]).await;
+            out_len += frame_count;
         }
     }
+
+    out_len
 }
