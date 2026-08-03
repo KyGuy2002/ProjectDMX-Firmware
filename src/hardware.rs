@@ -45,6 +45,8 @@ assign_resources! {
         din: PIN_20,
         bck: PIN_21,
         lck: PIN_22,
+        pio: PIO1,
+        dma: DMA_CH8,
     },
     sd: SdResources {
         sck: PIN_34,
@@ -95,6 +97,10 @@ bind_interrupts!(pub struct DmxIrqs {
 
 bind_interrupts!(pub struct NeoIrqs {
     PIO0_IRQ_0 => PioInterruptHandler<peripherals::PIO0>;
+});
+
+bind_interrupts!(pub struct AudioIrqs {
+    PIO1_IRQ_0 => PioInterruptHandler<peripherals::PIO1>;
 });
 
 bind_interrupts!(pub struct OledIrqs {

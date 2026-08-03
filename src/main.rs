@@ -88,7 +88,7 @@ async fn main(spawner: Spawner) {
     let ip_state = IP_STATE.init(AsyncMutex::new(None));
     spawner.spawn(periphs::oled::oled_task(r.oled, ip_state)).unwrap(); // OLED
     spawner.spawn(periphs::dmx::dmx_task(r.dmx)).unwrap(); // DMX
-    spawner.spawn(periphs::sd::sd_task(r.sd)).unwrap(); // SD
+    spawner.spawn(periphs::sd::sd_task(r.sd, r.audio)).unwrap(); // SD + MP3 playback
 
 
     if config.input.source == InputProtocol::Artnet || config.input.source == InputProtocol::sACN {
