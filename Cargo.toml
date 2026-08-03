@@ -42,7 +42,7 @@ statig = { version = "0.4", default-features = false, features = ["macro"] }
 o1heap = "0.0.2"
 
 # Data structures for embedded
-heapless = "0.8"
+heapless = { version = "0.8", features = ["serde"] }
 
 # USB support
 embassy-usb = { version = "0.5" }

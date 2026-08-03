@@ -5,6 +5,17 @@
     "dmx_output": {
         "universe": 0
     },
+    "audio": {
+        "universe": 0,
+        // 4 consecutive channels starting here: idle-left, idle-right, effect-left, effect-right.
+        // Per channel: 0 = silent, 1-127 = play idle_files/effect_files[value-1] once,
+        // 128-255 = loop idle_files/effect_files[value-128].
+        // If idle-left and idle-right (or effect-left/right) resolve to the same file+mode,
+        // it's played as a single synced decode duplicated to both speakers.
+        "start_channel": 20,
+        "idle_files": ["soul.mp3", "tonight.mp3", "friends.mp3", "supernova.mp3"],
+        "effect_files": ["spark1.mp3", "laser1.mp3"]
+    },
     "modules": {
         "slot_a": {
             "type": "fog_machine",

@@ -19,6 +19,7 @@ mod periphs {
     pub mod sensors;
     pub mod tcp_cmds;
     pub mod sd;
+    pub mod audio;
 }
 
 use core::cell::RefCell;
@@ -80,7 +81,7 @@ async fn main(spawner: Spawner) {
 
     // JSONC Configuration
     let config = load_config();
-    CONFIG.init(config).unwrap();
+    CONFIG.init(config.clone()).unwrap();
 
 
 
@@ -88,7 +89,9 @@ async fn main(spawner: Spawner) {
     let ip_state = IP_STATE.init(AsyncMutex::new(None));
     spawner.spawn(periphs::oled::oled_task(r.oled, ip_state)).unwrap(); // OLED
     spawner.spawn(periphs::dmx::dmx_task(r.dmx)).unwrap(); // DMX
-    spawner.spawn(periphs::sd::sd_task(r.sd, r.audio)).unwrap(); // SD + MP3 playback
+
+    let sd_handle = periphs::sd::init(r.sd); // Mount SD card
+    spawner.spawn(periphs::audio::audio_task(config.audio, r.audio, sd_handle)).unwrap(); // DMX-triggered audio playback
 
 
     if config.input.source == InputProtocol::Artnet || config.input.source == InputProtocol::sACN {

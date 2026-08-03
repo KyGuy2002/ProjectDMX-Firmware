@@ -1,10 +1,15 @@
-use heapless::String;
+use heapless::{String, Vec};
 use serde::{Deserialize, Serialize};
 use serde::de::{self, Deserializer};
 
 use defmt::info;
 
-const MAX_CONFIG_LEN: usize = 8192;
+const MAX_CONFIG_LEN: usize = 16384;
+
+// Max number of one-shot/loop slots addressable via a single DMX channel's value
+// (1-127 = one-shot index, 128-255 = loop index)
+pub const MAX_AUDIO_FILES: usize = 128;
+pub const MAX_FILENAME_LEN: usize = 32;
 
 /**
  * Loads the configuration from the embedded `config.jsonc` file and returns a `BoardInstanceConfig` struct.
@@ -163,6 +168,21 @@ pub struct InputConfig {
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub struct DmxOutputConfig {
     pub universe: u16,
+}
+
+// =========================================================================
+// AUDIO (DMX-TRIGGERED MP3 PLAYBACK)
+// =========================================================================
+
+// Not Copy (contains heapless::Vec/String) - BoardInstanceConfig is cloned instead
+// where it previously relied on being Copy.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct AudioConfig {
+    pub universe: u16,
+    // 4 consecutive channels from here: idle-left, idle-right, effect-left, effect-right
+    pub start_channel: u16,
+    pub idle_files: Vec<String<MAX_FILENAME_LEN>, MAX_AUDIO_FILES>,
+    pub effect_files: Vec<String<MAX_FILENAME_LEN>, MAX_AUDIO_FILES>,
 }
 
 // =========================================================================
@@ -368,9 +388,13 @@ pub struct ModuleContainer {
 // ROOT CONFIGURATION STRUCT
 // =========================================================================
 
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+// Not Copy - AudioConfig contains heapless collections. Clone it where the whole
+// struct needs to be handed off (e.g. into CONFIG / the audio task); individual Copy
+// sub-fields (like config.modules.slot_c) can still be read out normally.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct BoardInstanceConfig {
     pub input: InputConfig,
     pub dmx_output: DmxOutputConfig,
+    pub audio: AudioConfig,
     pub modules: ModuleContainer,
 }
