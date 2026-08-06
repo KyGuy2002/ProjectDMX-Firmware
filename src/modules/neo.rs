@@ -33,7 +33,7 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
     // Init drivers - Note pin order is based on module layout
     let mut strip_1 = RgbwPioWs2812::<peripherals::PIO0, 0, MAX_PIXELS, Rgbw>::with_color_order(&mut common,sm0,r.dma1,r.pin3,program);
     // let mut ws2812_2 = PioWs2812::<peripherals::PIO0, 1, MAX_PIXELS, Grb>::with_color_order(&mut common,sm1,r.dma2,r.pin4,program);
-    let mut strip_3 = PioWs2812::<peripherals::PIO0, 2, MAX_PIXELS, Grb>::with_color_order(&mut common,sm2,r.dma3,r.pin2,program);
+    let mut strip_3 = PioWs2812::<peripherals::PIO0, 2, MAX_PIXELS, Rgb>::with_color_order(&mut common,sm2,r.dma3,r.pin2,program);
     // let mut ws2812_4 = PioWs2812::<peripherals::PIO0, 3, MAX_PIXELS, Grb>::with_color_order(&mut common,sm3,r.dma4,r.pin1,program);
 
 

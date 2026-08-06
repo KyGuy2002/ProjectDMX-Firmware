@@ -44,15 +44,25 @@
                     "disabled": true
                 },
 
-                // Glowing Wire
+                // Bullet Pixels (Equipment)
                 {
                     "protocol": "ws2812",
-                    "color_order": "grb",
+                    "color_order": "rgb",
                     "pixel_count": 80,
                     "universe": 1,
                     "start_channel": 0,
                     "mode": "raw"
                 },
+
+                // // Glowing Wire
+                // {
+                //     "protocol": "ws2812",
+                //     "color_order": "grb",
+                //     "pixel_count": 80,
+                //     "universe": 1,
+                //     "start_channel": 0,
+                //     "mode": "raw"
+                // },
                 
 
                 //

@@ -83,6 +83,15 @@ struct Voice {
     // never faded in - they start at gain 1.0 immediately.
     gain: f32,
     fading: bool,
+
+    // Set once a non-looping voice plays through to the end. It stays in the pool
+    // (silent, no decode work) rather than being dropped immediately - if it were
+    // dropped, reconcile_role would see the DMX value still held on the same
+    // one-shot entry, find nothing occupying that slot, and restart it from scratch
+    // every batch, which sounds exactly like looping (and wastes a lot of CPU/SD
+    // I/O restarting a "finished" clip over and over). It only actually gets freed
+    // once the DMX value moves off this entry.
+    finished: bool,
 }
 
 impl Voice {
@@ -116,6 +125,7 @@ impl Voice {
             carry_pos: 0,
             gain: 1.0,
             fading: false,
+            finished: false,
         })
     }
 
@@ -201,8 +211,10 @@ impl Voice {
     }
 
     /// Mixes up to `count` samples of this voice into `mix_l`/`mix_r` according to
-    /// its routing, applying volume/fade gain. Returns false once the voice is done
-    /// (ran out of audio, or finished fading out) and should be dropped.
+    /// its routing, applying volume/fade gain. Returns false only once the voice
+    /// should actually be dropped from the pool (finished fading out, or a looping
+    /// voice somehow ran dry) - a one-shot playing through to the end instead just
+    /// marks itself `finished` and keeps returning true (silently).
     fn produce(
         &mut self,
         mix_l: &mut [f32],
@@ -210,10 +222,18 @@ impl Voice {
         count: usize,
         scratch: &mut [f32; MAX_SAMPLES_PER_FRAME],
     ) -> bool {
+        if self.finished {
+            return true;
+        }
+
         for i in 0..count {
             if self.carry_pos >= self.carry_len {
                 if !self.decode_next_frame(scratch) {
-                    return false;
+                    if self.looping {
+                        return false;
+                    }
+                    self.finished = true;
+                    return true;
                 }
             }
 
@@ -298,7 +318,12 @@ fn reconcile_role(
                     .any(|d| d.0 == v.file_index && d.1 == v.looping);
 
                 if !still_wanted {
-                    v.start_fade();
+                    if v.finished {
+                        // Nothing audible playing - nothing to fade, just free the slot.
+                        *slot = None;
+                    } else {
+                        v.start_fade();
+                    }
                 }
             }
         }

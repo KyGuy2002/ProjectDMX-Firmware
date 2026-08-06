@@ -69,12 +69,8 @@ pub fn init(r: SdResources) -> SdHandle {
     let sd_size = sdcard.num_bytes().expect("failed to get sdcard size");
     println!("SD card size is {} bytes", sd_size);
 
-    // Card is initialized (had to be done at 400kHz) - bump the SPI clock up for data
-    // transfer. Kept more conservative than the theoretical max - real-world wiring
-    // (breadboard/jumpers, longer traces) can turn a too-aggressive clock into
-    // intermittent read errors rather than just slower reads, which is worse for
-    // audio (each error gets treated as EOF, triggering an extra rewind+retry).
-    sdcard.spi(|dev| dev.bus_mut().set_frequency(8_000_000));
+    // Card is initialized (had to be done at 400kHz) - bump the SPI clock up for data transfer
+    sdcard.spi(|dev| dev.bus_mut().set_frequency(16_000_000));
 
     let volume_mgr = SdVolumeManager::new_with_limits(sdcard, DummyClock, 0);
     let mgr: &'static SdVolumeManager = VOLUME_MGR.init(volume_mgr);
