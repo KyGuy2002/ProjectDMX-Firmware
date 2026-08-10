@@ -96,7 +96,7 @@ async fn main(spawner: Spawner) {
 
     if config.input.source == InputProtocol::Artnet || config.input.source == InputProtocol::sACN {
         let stack = periphs::eth::start_eth(&spawner, r.eth, ip_state).await; // Ethernet
-        spawner.spawn(periphs::sensors::sensor_task(r.sensors)).unwrap(); // Sensors
+        periphs::sensors::start_sensors(&spawner, r.sensors); // Sensors
         spawner.spawn(periphs::tcp_cmds::tcp_cmds_task(stack)).unwrap(); // TCP Commands
 
         if config.input.source == InputProtocol::Artnet {

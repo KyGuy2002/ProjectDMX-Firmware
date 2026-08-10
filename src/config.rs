@@ -1,3 +1,6 @@
+use core::net::IpAddr;
+
+use embassy_net::IpAddress;
 use heapless::{String, Vec};
 use serde::{Deserialize, Serialize};
 use serde::de::{self, Deserializer};
@@ -391,6 +394,12 @@ pub struct ModuleContainer {
     pub slot_d: ModuleSlot,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct Chataigne {
+    pub ip: IpAddr,
+    pub port: u16,
+}
+
 // =========================================================================
 // ROOT CONFIGURATION STRUCT
 // =========================================================================
@@ -401,6 +410,7 @@ pub struct ModuleContainer {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct BoardInstanceConfig {
     pub input: InputConfig,
+    pub chataigne: Chataigne,
     pub dmx_output: DmxOutputConfig,
     pub audio: AudioConfig,
     pub modules: ModuleContainer,

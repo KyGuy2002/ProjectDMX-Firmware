@@ -2,8 +2,8 @@ use embassy_rp::i2c::{self, Config};
 
 use embassy_time::{Duration, Timer};
 
-use core::sync::atomic::Ordering;
-use crate::{hardware::{OledIrqs, OledResources}, periphs::sensors::BUTTON_STATUS};
+use core::sync::atomic::{AtomicBool, Ordering};
+use crate::{hardware::{OledIrqs, OledResources}, periphs::sensors::*};
 use core::fmt::Write;
 use embassy_net::Ipv4Address;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -86,19 +86,7 @@ pub async fn oled_task(r: OledResources, ip_state: &'static AsyncMutex<CriticalS
 
 
 
-        let pressed = BUTTON_STATUS.load(Ordering::Relaxed);
-
-        if !pressed {
-            Circle::new(Point::new(8, 8), 16)
-                .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-                .draw(&mut display)
-                .ok();
-        } else {
-            Circle::new(Point::new(8, 8), 16)
-                .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-                .draw(&mut display)
-                .ok();
-        }
+        render_input_state(&mut display);
 
 
         
@@ -186,4 +174,39 @@ where
         .draw(display)
         .ok();
     }
+}
+
+
+fn render_input_state<D>(display: &mut D)
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    render_in(display, &BUTTON_1_STATUS, 1);
+    render_in(display, &BUTTON_2_STATUS, 2);
+    render_in(display, &BUTTON_3_STATUS, 3);
+    render_in(display, &BUTTON_4_STATUS, 4);
+    render_in(display, &BUTTON_5_STATUS, 5);
+    render_in(display, &BUTTON_6_STATUS, 6);
+
+        
+}
+
+fn render_in<D>(display: &mut D, var: &'static AtomicBool, no: i32)
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+
+    let pressed = var.load(Ordering::Relaxed);
+    if !pressed {
+        Circle::new(Point::new((64/10) * (no - 1), 0), 10)
+            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
+            .draw(display)
+            .ok();
+    } else {
+        Circle::new(Point::new((64/10) * (no - 1), 0), 10)
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)
+            .ok();
+    }
+
 }

@@ -2,6 +2,10 @@
     "input": {
         "source": "sacn"
     },
+    "chataigne": {
+        "ip": "192.168.1.29",
+        "port": 6000
+    },
     "dmx_output": {
         "universe": 0
     },
@@ -50,7 +54,7 @@
                     "color_order": "rgb",
                     "pixel_count": 80,
                     "universe": 1,
-                    "start_channel": 0,
+                    "start_channel": 30,
                     "mode": "raw"
                 },
 
