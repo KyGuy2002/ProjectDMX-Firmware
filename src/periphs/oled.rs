@@ -198,12 +198,12 @@ where
 
     let pressed = var.load(Ordering::Relaxed);
     if !pressed {
-        Circle::new(Point::new((64/10) * (no - 1), 0), 10)
+        Circle::new(Point::new((128/10) * (no - 1), 0), 10)
             .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
             .draw(display)
             .ok();
     } else {
-        Circle::new(Point::new((64/10) * (no - 1), 0), 10)
+        Circle::new(Point::new((128/10) * (no - 1), 0), 10)
             .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
             .draw(display)
             .ok();
