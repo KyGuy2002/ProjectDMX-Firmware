@@ -61,11 +61,12 @@ assign_resources! {
         pin3: PIN_2,
         pin4: PIN_40, // Analog
     },
-    slot_b_unused: SlotBUnusedResources {
-        pin1: PIN_8,
+    slot_b_ask433: SlotBAsk433Resources {
+        pin1: PIN_8, // Receiver DO pin
         pin2: PIN_6,
         pin3: PIN_5,
         pin4: PIN_41, // Analog
+        pio: PIO2,
     },
     slot_c_neo: SlotCNeoResources {
         pin1: PIN_15, // 4th Output (Dead on JST and Term Modules)
@@ -101,6 +102,10 @@ bind_interrupts!(pub struct NeoIrqs {
 
 bind_interrupts!(pub struct AudioIrqs {
     PIO1_IRQ_0 => PioInterruptHandler<peripherals::PIO1>;
+});
+
+bind_interrupts!(pub struct Ask433Irqs {
+    PIO2_IRQ_0 => PioInterruptHandler<peripherals::PIO2>;
 });
 
 bind_interrupts!(pub struct OledIrqs {

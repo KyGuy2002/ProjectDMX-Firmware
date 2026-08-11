@@ -5,16 +5,13 @@ use crate::hardware::*;
 
 mod dimmer;
 mod neo;
+pub mod ask433;
 
 /**
  * This will eventually use the config for module order but for now its hardcoded, along with the pin assignments and pwm slices and stuff
  */
 
 pub fn init_slot_a(spawner: &Spawner, slot_config: ModuleSlot, r: SlotARelayResources) {
-    
-}
-
-pub fn init_slot_b(spawner: &Spawner, slot_config: ModuleSlot, r: SlotBUnusedResources) {
     
 }
 

@@ -3,6 +3,7 @@ use embassy_net::{Stack, tcp::TcpSocket};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::fmt::Write;
 
+use crate::modules::ask433::KNOWN_SENSORS;
 use crate::periphs::sensors::*;
 
 #[embassy_executor::task]
@@ -23,6 +24,12 @@ pub async fn tcp_cmds_task(stack: Stack<'static>) {
     let mut last_sent_status_4 = BUTTON_4_STATUS.load(Ordering::Relaxed);
     let mut last_sent_status_5 = BUTTON_5_STATUS.load(Ordering::Relaxed);
     let mut last_sent_status_6 = BUTTON_6_STATUS.load(Ordering::Relaxed);
+
+    // Same edge-detection, one slot per entry in ask433::KNOWN_SENSORS.
+    let mut last_sent_ask433 = [false; KNOWN_SENSORS.len()];
+    for (i, sensor) in KNOWN_SENSORS.iter().enumerate() {
+        last_sent_ask433[i] = sensor.status.load(Ordering::Relaxed);
+    }
 
 
     loop {
@@ -45,6 +52,11 @@ pub async fn tcp_cmds_task(stack: Stack<'static>) {
             last_sent_status_4 = send_sensor_status(&mut socket, &BUTTON_4_STATUS, 4, last_sent_status_4).await;
             last_sent_status_5 = send_sensor_status(&mut socket, &BUTTON_5_STATUS, 5, last_sent_status_5).await;
             last_sent_status_6 = send_sensor_status(&mut socket, &BUTTON_6_STATUS, 6, last_sent_status_6).await;
+
+            for (i, sensor) in KNOWN_SENSORS.iter().enumerate() {
+                last_sent_ask433[i] =
+                    send_ask433_status(&mut socket, sensor, last_sent_ask433[i]).await;
+            }
 
             // Yield control back to Embassy executor for 10ms to save processing cycles
             embassy_time::Timer::after_millis(10).await;
@@ -69,6 +81,31 @@ async fn send_sensor_status(socket: &mut TcpSocket<'_>, var: &'static AtomicBool
             return last_sent_status;
         }
         
+        info!("Sent to Chataigne: {}", message.trim_end());
+        return current_status;
+    }
+
+    last_sent_status
+}
+
+
+async fn send_ask433_status(
+    socket: &mut TcpSocket<'_>,
+    sensor: &crate::modules::ask433::KnownSensor,
+    last_sent_status: bool,
+) -> bool {
+    let current_status = sensor.status.load(Ordering::Relaxed);
+
+    if current_status != last_sent_status {
+        let mut message: heapless::String<40> = heapless::String::new();
+        // "ASK_" is TCP-only - KNOWN_SENSORS names (e.g. "BOX1") stay bare in logs.
+        write!(&mut message, "ASK_{}:{}\n", sensor.name, current_status as u8).unwrap();
+
+        if let Err(e) = socket.write(message.as_bytes()).await {
+            warn!("TCP Write Failed: {:?}. Forcing reconnection...", e);
+            return last_sent_status;
+        }
+
         info!("Sent to Chataigne: {}", message.trim_end());
         return current_status;
     }

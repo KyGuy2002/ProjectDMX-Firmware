@@ -93,6 +93,8 @@ async fn main(spawner: Spawner) {
     let sd_handle = periphs::sd::init(r.sd); // Mount SD card
     spawner.spawn(periphs::audio::audio_task(config.audio, r.audio, sd_handle)).unwrap(); // DMX-triggered audio playback
 
+    spawner.spawn(modules::ask433::ask433_task(r.slot_b_ask433)).unwrap(); // 433MHz receiver test
+
 
     if config.input.source == InputProtocol::Artnet || config.input.source == InputProtocol::sACN {
         let stack = periphs::eth::start_eth(&spawner, r.eth, ip_state).await; // Ethernet
