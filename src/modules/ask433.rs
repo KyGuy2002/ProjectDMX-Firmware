@@ -10,29 +10,79 @@ use heapless::Vec;
 
 use crate::hardware::{Ask433Irqs, SlotBAsk433Resources};
 
+/// What a 4-bit data value means for a given [`KnownSensor`].
+pub enum SensorKind {
+    /// Two-state device (door/window sensor): distinct data values for open
+    /// and closed.
+    DoorSensor { open_data: u8, closed_data: u8 },
+    /// On-only device (fob button): a single data value means "pressed".
+    /// There's no separate "released" transmission to key off of, so
+    /// `status` just goes true on press and is never cleared here.
+    Button { data: u8 },
+}
+
+impl SensorKind {
+    /// If `data` is a value this kind recognizes, the state to store
+    /// (true = open / pressed).
+    fn resolve(&self, data: u8) -> Option<bool> {
+        match *self {
+            SensorKind::DoorSensor { open_data, closed_data } => {
+                if data == open_data {
+                    Some(true)
+                } else if data == closed_data {
+                    Some(false)
+                } else {
+                    None
+                }
+            }
+            SensorKind::Button { data: on_data } => (data == on_data).then_some(true),
+        }
+    }
+}
+
 /// A sensor/fob you've identified. EV1527/PT2262 frames are 20 address bits
-/// + 4 data bits: `address` is fixed per physical device, `open_data`/
-/// `closed_data` are whatever 4-bit values that device sends for each state.
-/// `status` (true = open) is updated here and read by tcp_cmds to notify
-/// on change - `name` is used as-is in logs; tcp_cmds prefixes it with
-/// "ASK_" for the TCP message.
+/// + 4 data bits: `address` is fixed per physical device, `kind` says what
+/// its data values mean. Multiple rows may share the same `address` (e.g.
+/// one fob, one row per button) - they're told apart by data, not address.
+/// `status` is updated here and read by tcp_cmds to notify on change -
+/// `name` is used as-is in logs; tcp_cmds prefixes it with "ASK_" for the
+/// TCP message.
 ///
-/// To learn a new device: open/close it, watch the "unknown sensor" log
-/// lines below for its address and data value, then add an entry here.
+/// To learn a new device: trigger it, watch the "unknown sensor" log lines
+/// below for its address and data value, then add an entry here.
 pub struct KnownSensor {
     pub address: u32,
     pub name: &'static str,
-    pub open_data: u8,
-    pub closed_data: u8,
+    pub kind: SensorKind,
     pub status: &'static AtomicBool,
+}
+
+impl KnownSensor {
+    pub const fn door(address: u32, name: &'static str, open_data: u8, closed_data: u8, status: &'static AtomicBool) -> Self {
+        KnownSensor { address, name, kind: SensorKind::DoorSensor { open_data, closed_data }, status }
+    }
+
+    pub const fn button(address: u32, name: &'static str, data: u8, status: &'static AtomicBool) -> Self {
+        KnownSensor { address, name, kind: SensorKind::Button { data }, status }
+    }
 }
 
 pub static BOX1_STATUS: AtomicBool = AtomicBool::new(false);
 pub static BOX2_STATUS: AtomicBool = AtomicBool::new(false);
+pub static FOB_A_STATUS: AtomicBool = AtomicBool::new(false);
+pub static FOB_B_STATUS: AtomicBool = AtomicBool::new(false);
+pub static FOB_C_STATUS: AtomicBool = AtomicBool::new(false);
+pub static FOB_D_STATUS: AtomicBool = AtomicBool::new(false);
 
 pub const KNOWN_SENSORS: &[KnownSensor] = &[
-    KnownSensor { address: 0x87e5a, name: "BOX1", open_data: 0x6, closed_data: 0x9, status: &BOX1_STATUS },
-    KnownSensor { address: 0x8d37d, name: "BOX2", open_data: 0x6, closed_data: 0x9, status: &BOX2_STATUS },
+    KnownSensor::door(0x87e5a, "BOX1", 0x6, 0x9, &BOX1_STATUS),
+    KnownSensor::door(0x8d37d, "BOX2", 0x6, 0x9, &BOX2_STATUS),
+    // Fill in the real address (same for all 4 - it's one fob, one row per
+    // button, told apart by data).
+    KnownSensor::button(0x3fcad, "FOB_A", 0x8, &FOB_A_STATUS),
+    KnownSensor::button(0x3fcad, "FOB_B", 0x4, &FOB_B_STATUS),
+    KnownSensor::button(0x3fcad, "FOB_C", 0x2, &FOB_C_STATUS),
+    KnownSensor::button(0x3fcad, "FOB_D", 0x1, &FOB_D_STATUS),
 ];
 
 // Cheap superheterodyne receivers have no squelch, so the DATA pin is never
@@ -57,34 +107,90 @@ const BIT_RATIO_MAX: f32 = 6.0;
 const MAX_FRAME_BITS: u32 = 32;
 /// How many distinct sensor addresses to remember the last state of.
 const MAX_TRACKED_SENSORS: usize = 8;
-/// If a sensor hasn't been heard from in this long, forget its last known
-/// state - a stale tracked entry can never get "stuck" suppressing a
-/// genuine repeat indefinitely.
+/// If a known door sensor hasn't been heard from in this long, forget its
+/// last open/closed state - a stale tracked entry can never get "stuck"
+/// suppressing a genuine repeat indefinitely.
 const STALE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Same idea, but for buttons: repeats within one press-and-hold arrive
+/// every ~10-30ms, so this just needs to be comfortably longer than that -
+/// short enough that releasing and clicking again registers as a new event.
+const BUTTON_REPEAT_WINDOW: Duration = Duration::from_millis(500);
 
-fn lookup_sensor(address: u32) -> Option<&'static KnownSensor> {
-    KNOWN_SENSORS.iter().find(|s| s.address == address)
+type SensorMemory = Vec<(u32, u8, Instant), MAX_TRACKED_SENSORS>;
+
+/// Every row sharing `address` (a fob has one row per button, all with the
+/// same address) - told apart from each other by which one's data matches.
+fn sensors_for(address: u32) -> impl Iterator<Item = &'static KnownSensor> {
+    KNOWN_SENSORS.iter().filter(move |s| s.address == address)
 }
 
-fn log_frame(code: u32, bit_count: u32) {
-    if bit_count != 24 {
-        // Garbled edge-of-burst frame - never a valid state, not worth logging.
-        return;
+/// Dedup keyed on (address, data): true if this exact data value was already
+/// the last thing logged for this address within `timeout`. Updates the
+/// tracker as a side effect - callers must only call this for a value that's
+/// actually safe to remember (see the "unknown state" note in handle_frame).
+fn is_repeat(last_states: &mut SensorMemory, address: u32, data: u8, now: Instant, timeout: Duration) -> bool {
+    match last_states.iter_mut().find(|(a, ..)| *a == address) {
+        Some(entry) => {
+            let stale = now.duration_since(entry.2) >= timeout;
+            let repeat = !stale && entry.1 == data;
+            entry.1 = data;
+            entry.2 = now;
+            repeat
+        }
+        // First time seeing this address - always report it, and start
+        // tracking it (silently drops past MAX_TRACKED_SENSORS).
+        None => {
+            let _ = last_states.push((address, data, now));
+            false
+        }
     }
+}
 
+fn handle_frame(last_states: &mut SensorMemory, code: u32) {
     let address = code >> 4;
     let data = (code & 0xF) as u8;
 
-    match lookup_sensor(address) {
-        Some(sensor) if data == sensor.open_data => {
-            sensor.status.store(true, Ordering::Relaxed);
-            info!("ask433 {}: OPEN", sensor.name);
+    let matched = sensors_for(address).find_map(|s| s.kind.resolve(data).map(|state| (s, state)));
+
+    match matched {
+        Some((sensor, state)) => {
+            let timeout = match sensor.kind {
+                SensorKind::DoorSensor { .. } => STALE_TIMEOUT,
+                SensorKind::Button { .. } => BUTTON_REPEAT_WINDOW,
+            };
+            if !is_repeat(last_states, address, data, Instant::now(), timeout) {
+                let label = match sensor.kind {
+                    SensorKind::DoorSensor { .. } => {
+                        sensor.status.store(state, Ordering::Relaxed);
+                        if state { "OPEN" } else { "CLOSED" }
+                    }
+                    SensorKind::Button { .. } => {
+                        // A click is a one-shot event, not a persistent state,
+                        // so always storing true would only produce an edge -
+                        // and therefore a TCP message via tcp_cmds.rs - on the
+                        // very first press ever. Flipping it every press keeps
+                        // producing a fresh edge each time, so every click
+                        // sends a message; the actual 0/1 value is meaningless.
+                        let toggled = !sensor.status.load(Ordering::Relaxed);
+                        sensor.status.store(toggled, Ordering::Relaxed);
+                        "ON"
+                    }
+                };
+                info!("ask433 {}: {}", sensor.name, label);
+            }
         }
-        Some(sensor) if data == sensor.closed_data => {
-            sensor.status.store(false, Ordering::Relaxed);
-            info!("ask433 {}: CLOSED", sensor.name);
+        None if sensors_for(address).next().is_some() => {
+            // Address matches known row(s), but data doesn't match any of
+            // them - a garbled reading, not a real extra state. Report it,
+            // but never feed it into the tracker: doing so would overwrite
+            // the last genuine value, and the next real repeat could then
+            // get compared against garbage instead and wrongly suppressed.
+            info!("ask433 address 0x{:05x}: unrecognized data=0x{:x}", address, data);
         }
-        Some(sensor) => info!("ask433 {}: unknown state (data=0x{:x})", sensor.name, data),
+        // Completely unlisted address - raw sniffer mode: print every single
+        // decoded frame, no dedup/debounce at all. Useful for a flaky
+        // transmitter where you need to see exactly what came through
+        // (including drops/glitches), not a cleaned-up view of it.
         None => info!("ask433 unknown sensor: address=0x{:05x} data=0x{:x}", address, data),
     }
 }
@@ -143,13 +249,8 @@ pub async fn ask433_task(r: SlotBAsk433Resources) {
     let mut bit_count: u32 = 0;
     let mut collecting = false;
 
-    // Last (code, when) seen per sensor address. Only ever touched by a
-    // clean 24-bit frame; a garbled frame in between (common up close, where
-    // a stronger signal means more edge reflections) must not disturb this.
-    // Printing is gated on the decoded state actually changing for that
-    // address - or on the entry being stale - so repeats of the same state
-    // are suppressed without any short-window timing guesswork.
-    let mut last_states: Vec<(u32, u32, Instant), MAX_TRACKED_SENSORS> = Vec::new();
+    // Last (data, when) seen per sensor address - see is_repeat/handle_frame.
+    let mut last_states: SensorMemory = Vec::new();
 
     loop {
         let high = sm0.rx().wait_pull().await;
@@ -162,28 +263,7 @@ pub async fn ask433_task(r: SlotBAsk433Resources) {
             // Sync gap: end of a frame (if we were collecting one) and the
             // start of the next.
             if collecting && bit_count == 24 {
-                let address = code >> 4;
-                let now = Instant::now();
-
-                let changed = match last_states.iter_mut().find(|(a, ..)| *a == address) {
-                    Some(entry) => {
-                        let stale = now.duration_since(entry.2) >= STALE_TIMEOUT;
-                        let changed = stale || entry.1 != code;
-                        entry.1 = code;
-                        entry.2 = now;
-                        changed
-                    }
-                    // First time seeing this address - always report it, and
-                    // start tracking it (silently drops past MAX_TRACKED_SENSORS).
-                    None => {
-                        let _ = last_states.push((address, code, now));
-                        true
-                    }
-                };
-
-                if changed {
-                    log_frame(code, bit_count);
-                }
+                handle_frame(&mut last_states, code);
             }
             code = 0;
             bit_count = 0;

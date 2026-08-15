@@ -23,7 +23,7 @@
     "modules": {
         "slot_a": {
             "type": "fog_machine",
-            "universe": 0,
+            "universe": 1,
             "start_channel": 4
         },
         "slot_b": {

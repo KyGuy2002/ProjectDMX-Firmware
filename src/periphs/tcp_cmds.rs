@@ -71,7 +71,6 @@ async fn send_sensor_status(socket: &mut TcpSocket<'_>, var: &'static AtomicBool
 
     // Edge detection: only act if the state changed
     if current_status != last_sent_status {
-        info!("msg");
         let mut message: heapless::String<32> = heapless::String::new();
         write!(&mut message, "SWITCH_{}:{}\n", no, current_status as u8).unwrap();
 
@@ -81,7 +80,7 @@ async fn send_sensor_status(socket: &mut TcpSocket<'_>, var: &'static AtomicBool
             return last_sent_status;
         }
         
-        info!("Sent to Chataigne: {}", message.trim_end());
+        // info!("Sent to Chataigne: {}", message.trim_end());
         return current_status;
     }
 
