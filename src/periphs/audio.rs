@@ -28,8 +28,11 @@ const MAX_FRAME_SAMPLES: usize = MAX_SAMPLES_PER_FRAME / 2;
 const VOICE_MP3_BUF_SIZE: usize = 4 * 1024;
 const VOICE_MP3_BUF_REFILL_THRESHOLD: usize = 2 * 1024;
 
-// Frames per I2S DMA transfer / buffer. Also the yield granularity.
-const FRAMES_PER_BATCH: usize = 8;
+// Frames per I2S DMA transfer / buffer. Two of these are in flight at once, so
+// this sets the delay between starting a voice and hearing it: ~FRAMES_PER_BATCH
+// * 2 * 26 ms. Kept small for a snappy response to DMX changes; still ~200 ms of
+// buffered audio, far more than one decode+SD-read cycle needs.
+const FRAMES_PER_BATCH: usize = 4;
 const OUT_BUF_LEN: usize = MAX_FRAME_SAMPLES * FRAMES_PER_BATCH;
 
 /// Maps a DMX value to `(file_index, looping)`:
@@ -51,9 +54,54 @@ fn decode_value(v: u8, num_files: usize) -> Option<(usize, bool)> {
     (idx < num_files).then_some((idx, looping))
 }
 
+/// Reads the first 10 bytes of an MP3 and, if they are an ID3v2 tag header,
+/// returns the byte offset where the actual audio starts. Real songs routinely
+/// carry tens of KB of ID3v2 metadata (embedded album art); seeking past it up
+/// front keeps the decoder from grinding through all of it on every file open.
+/// Returns 0 when there is no recognisable tag.
+fn id3v2_data_start(file: &mut SdFile<'static>) -> u32 {
+    let mut header = [0u8; 10];
+    let mut read = 0;
+
+    while read < header.len() {
+        match file.read(&mut header[read..]) {
+            Ok(0) => break,
+            Ok(n) => read += n,
+            Err(_) => break,
+        }
+    }
+
+    // "ID3" magic, and the 4 size bytes must be syncsafe (top bit clear).
+    let is_id3 = read == header.len()
+        && &header[..3] == b"ID3"
+        && header[6] < 0x80
+        && header[7] < 0x80
+        && header[8] < 0x80
+        && header[9] < 0x80;
+
+    if !is_id3 {
+        return 0;
+    }
+
+    let size = ((header[6] as u32) << 21)
+        | ((header[7] as u32) << 14)
+        | ((header[8] as u32) << 7)
+        | (header[9] as u32);
+
+    let mut total = 10 + size;
+    if header[5] & 0x10 != 0 {
+        total += 10; // optional footer
+    }
+
+    total
+}
+
 struct Voice {
     file_index: usize,
     looping: bool,
+    // Offset of the first audio byte (past any ID3v2 tag). Loop-rewinds seek here
+    // rather than to 0 so the tag is only ever scanned past once.
+    data_start: u32,
     // Set once a one-shot plays through to EOF. The voice is kept (silent) rather
     // than dropped, so reconcile() doesn't see "nothing playing" and restart it
     // every fill. Cleared only by selecting a different file (or 0).
@@ -72,7 +120,7 @@ struct Voice {
 
 impl Voice {
     fn start(handle: SdHandle, file_index: usize, looping: bool, filename: &str) -> Option<Voice> {
-        let file = match sd::open_file(handle, filename, Mode::ReadOnly) {
+        let mut file = match sd::open_file(handle, filename, Mode::ReadOnly) {
             Ok(f) => f,
             Err(_) => {
                 println!("Audio: failed to open {}", filename);
@@ -80,9 +128,15 @@ impl Voice {
             }
         };
 
+        let data_start = id3v2_data_start(&mut file);
+        if file.seek_from_start(data_start).is_err() {
+            let _ = file.seek_from_start(0);
+        }
+
         Some(Voice {
             file_index,
             looping,
+            data_start,
             finished: false,
             file,
             decoder: Decoder::new(),
@@ -113,7 +167,7 @@ impl Voice {
             if self.buf_len == 0 {
                 if eof {
                     if self.looping && !rewound {
-                        if self.file.seek_from_start(0).is_err() {
+                        if self.file.seek_from_start(self.data_start).is_err() {
                             return false;
                         }
                         eof = false;
@@ -129,9 +183,17 @@ impl Voice {
 
             if consumed == 0 && info.is_none() {
                 if eof || self.buf_len >= VOICE_MP3_BUF_SIZE {
-                    // As full as it will get and still no frame - skip a byte to
-                    // resync instead of spinning forever.
-                    consumed = 1;
+                    // A frame header sits at offset 0 but the frame isn't complete
+                    // and no more data is coming - skip to the next sync candidate
+                    // (0xFF followed by 0xE_/0xF_) in one move rather than nudging
+                    // one byte at a time.
+                    let mut skip = 1;
+                    while skip + 1 < self.buf_len
+                        && !(self.mp3_buf[skip] == 0xFF && (self.mp3_buf[skip + 1] & 0xE0) == 0xE0)
+                    {
+                        skip += 1;
+                    }
+                    consumed = skip;
                 } else {
                     // Decode needs more bytes than are buffered. Force a read now;
                     // without this the loop can never make progress (no state
