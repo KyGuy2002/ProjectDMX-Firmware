@@ -31,17 +31,24 @@ pub async fn dimmer_task(settings: DimmerConfig, r: SlotDDimmerResources) {
         let ch = read_channels::<4>(settings.universe as usize, settings.start_channel as usize);
 
         // Temp binary mode
-        if ch[0] > 127 {
-            cfg1.compare_b = 255;
+        if ch[2] > 127 {
+            cfg2.compare_b = 255;
         } else {
-            cfg1.compare_b = 0;
+            cfg2.compare_b = 0;
+        }
+
+        // Temp binary mode
+        if ch[3] > 127 {
+            cfg2.compare_a = 255;
+        } else {
+            cfg2.compare_a = 0;
         }
 
         // Order here is hardcoded based on slices and channels
-        // cfg1.compare_b = ch[0] as u16;
+        cfg1.compare_b = ch[0] as u16;
         cfg1.compare_a = ch[1] as u16;
-        cfg2.compare_b = ch[2] as u16;
-        cfg2.compare_a = ch[3] as u16;
+        // cfg2.compare_b = ch[2] as u16;
+        // cfg2.compare_a = ch[3] as u16;
 
         pwm1.set_config(&cfg1);
         pwm2.set_config(&cfg2);

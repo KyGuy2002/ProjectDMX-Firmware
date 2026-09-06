@@ -31,7 +31,7 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
 
     // Init drivers - Note pin order is based on module layout
     let mut strip_1 = RgbwPioWs2812::<peripherals::PIO0, 0, MAX_PIXELS, Rgbw>::with_color_order(&mut common,sm0,r.dma1,r.pin3,program);
-    let mut strip_2 = PioWs2812::<peripherals::PIO0, 1, MAX_PIXELS, Grb>::with_color_order(&mut common,sm1,r.dma2,r.pin4,program);
+    // let mut strip_2 = PioWs2812::<peripherals::PIO0, 1, MAX_PIXELS, Grb>::with_color_order(&mut common,sm1,r.dma2,r.pin4,program);
     let mut strip_3 = PioWs2812::<peripherals::PIO0, 2, MAX_PIXELS, Rgb>::with_color_order(&mut common,sm2,r.dma3,r.pin2,program);
     // let mut ws2812_4 = PioWs2812::<peripherals::PIO0, 3, MAX_PIXELS, Grb>::with_color_order(&mut common,sm3,r.dma4,r.pin1,program);
 
@@ -39,7 +39,7 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
 
     // Setup LED buffers
     let mut leds_output_1 = [RGBW::<u8>::default(); MAX_PIXELS];
-    let mut leds_output_2 = [RGB8::default(); MAX_PIXELS];
+    // let mut leds_output_2 = [RGB8::default(); MAX_PIXELS];
     let mut leds_output_3 = [RGB8::default(); MAX_PIXELS];
     // let mut leds_output_4 = [RGB8::default(); MAX_PIXELS];
 
@@ -48,7 +48,7 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
     // Setup effect state
     let layout_table = get_layout_map();
     let mut strip_1_effect_state = NeoEffectState::new();
-    let mut strip_2_effect_state = NeoEffectState::new();
+    // let mut strip_2_effect_state = NeoEffectState::new();
     let mut strip_3_effect_state = NeoEffectState::new();
     // let mut strip_4_effect_state = NeoEffectState::new();
 
@@ -76,18 +76,18 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
         }
 
         // Strip 2
-        if let Port::Enabled(port_config) = settings.ports[1] {
+        // if let Port::Enabled(port_config) = settings.ports[1] {
 
-            if port_config.mode == NeoMode::SolidColor {
-                tick_solid_color_rgb(port_config, &mut leds_output_2);
-            } else if port_config.mode == NeoMode::Generator2D {
-                tick_wire_effect_rgb(port_config, &mut strip_2_effect_state, &layout_table, &mut leds_output_2);
-            }
-            else if port_config.mode == NeoMode::Raw {
-                tick_raw_rgb(port_config, &mut leds_output_2);
-            }
+        //     if port_config.mode == NeoMode::SolidColor {
+        //         tick_solid_color_rgb(port_config, &mut leds_output_2);
+        //     } else if port_config.mode == NeoMode::Generator2D {
+        //         tick_wire_effect_rgb(port_config, &mut strip_2_effect_state, &layout_table, &mut leds_output_2);
+        //     }
+        //     else if port_config.mode == NeoMode::Raw {
+        //         tick_raw_rgb(port_config, &mut leds_output_2);
+        //     }
             
-        }
+        // }
 
         // Strip 3
         if let Port::Enabled(port_config) = settings.ports[2] {
@@ -105,9 +105,9 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
 
         
         
-        embassy_futures::join::join3( // <- change 2nd to join or join3 or join4
+        embassy_futures::join::join( // <- change 2nd to join or join3 or join4
             strip_1.write(&leds_output_1),
-            strip_2.write(&leds_output_2),
+            // strip_2.write(&leds_output_2),
             strip_3.write(&leds_output_3),
             // strip_4.write(&leds_output_4),
         ).await;
