@@ -11,20 +11,13 @@
     },
     "audio": {
         "universe": 0,
-        // 4 consecutive channels starting here: idle-left, idle-right, effect-left, effect-right.
-        // Per channel: 0 = silent, 1-127 = play idle_files/effect_files[value-1] once,
-        // 128-255 = loop idle_files/effect_files[value-128].
-        // If idle-left and idle-right (or effect-left/right) resolve to the same file+mode,
-        // it's played as a single synced decode duplicated to both speakers.
         "start_channel": 20,
         "idle_files": ["soul.mp3", "tonight.mp3", "friends.mp3", "supernova.mp3"],
         "effect_files": ["spark1.mp3", "laser1.mp3"]
     },
     "modules": {
         "slot_a": {
-            "type": "fog_machine",
-            "universe": 1,
-            "start_channel": 4
+            "disabled": true
         },
         "slot_b": {
             "disabled": true
@@ -43,9 +36,14 @@
                     "mode": "raw"
                 },
 
-                //
+                // Glowing Wire
                 {
-                    "disabled": true
+                    "protocol": "ws2812",
+                    "color_order": "grb",
+                    "pixel_count": 80,
+                    "universe": 1,
+                    "start_channel": 5,
+                    "mode": "generator2d"
                 },
 
                 // Bullet Pixels (Equipment)
@@ -57,16 +55,6 @@
                     "start_channel": 30,
                     "mode": "raw"
                 },
-
-                // // Glowing Wire
-                // {
-                //     "protocol": "ws2812",
-                //     "color_order": "grb",
-                //     "pixel_count": 80,
-                //     "universe": 1,
-                //     "start_channel": 0,
-                //     "mode": "raw"
-                // },
                 
 
                 //
