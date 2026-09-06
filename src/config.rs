@@ -1,6 +1,5 @@
 use core::net::IpAddr;
 
-use embassy_net::IpAddress;
 use heapless::{String, Vec};
 use serde::{Deserialize, Serialize};
 use serde::de::{self, Deserializer};
@@ -9,16 +8,8 @@ use defmt::info;
 
 const MAX_CONFIG_LEN: usize = 10240;
 
-// Max number of entries per audio file list. `BoardInstanceConfig` (which embeds two
-// of these Vecs, always at full fixed capacity regardless of how many entries are
-// actually used) gets copied through several stack frames during boot - parsed by
-// serde_json_core, returned from load_config(), then cloned into CONFIG - all before
-// the first `await`, so it's on the real hardware stack rather than an embassy task's
-// static storage. Setting this too high (128 was tried and silently hard-faulted the
-// board on boot, no panic - classic stack overflow) blows that budget. 32 is already
-// far more than most rigs need; the DMX 1-127/128-255 value range still addresses
-// only the first 32 as a result - bump this (and watch stack usage) if you need more.
-pub const MAX_AUDIO_FILES: usize = 32;
+
+pub const MAX_AUDIO_FILES: usize = 10;
 pub const MAX_FILENAME_LEN: usize = 24;
 
 /**
@@ -184,15 +175,11 @@ pub struct DmxOutputConfig {
 // AUDIO (DMX-TRIGGERED MP3 PLAYBACK)
 // =========================================================================
 
-// Not Copy (contains heapless::Vec/String) - BoardInstanceConfig is cloned instead
-// where it previously relied on being Copy.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct AudioConfig {
     pub universe: u16,
-    // 4 consecutive channels from here: idle-left, idle-right, effect-left, effect-right
     pub start_channel: u16,
-    pub idle_files: Vec<String<MAX_FILENAME_LEN>, MAX_AUDIO_FILES>,
-    pub effect_files: Vec<String<MAX_FILENAME_LEN>, MAX_AUDIO_FILES>,
+    pub files: Vec<String<MAX_FILENAME_LEN>, MAX_AUDIO_FILES>,
 }
 
 // =========================================================================
