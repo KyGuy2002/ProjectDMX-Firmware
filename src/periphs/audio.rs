@@ -2,13 +2,15 @@ use defmt::println;
 
 use embassy_futures::join::join;
 use embassy_futures::yield_now;
+use embassy_rp::pac;
 use embassy_rp::pio::Pio;
 use embassy_rp::pio_programs::i2s::{PioI2sOut, PioI2sOutProgram};
+use embassy_time::Instant;
 use embedded_sdmmc::Mode;
 use nanomp3::{Decoder, MAX_SAMPLES_PER_FRAME};
 
 use crate::config::AudioConfig;
-use crate::hardware::{AudioIrqs, AudioResources};
+use crate::hardware::{AudioIrqs, AudioResources, SdResources};
 use crate::periphs::sd::{self, SdFile, SdHandle};
 use crate::read_channels;
 
@@ -28,12 +30,27 @@ const MAX_FRAME_SAMPLES: usize = MAX_SAMPLES_PER_FRAME / 2;
 const VOICE_MP3_BUF_SIZE: usize = 4 * 1024;
 const VOICE_MP3_BUF_REFILL_THRESHOLD: usize = 2 * 1024;
 
-// Frames per I2S DMA transfer / buffer. Two of these are in flight at once, so
-// this sets the delay between starting a voice and hearing it: ~FRAMES_PER_BATCH
-// * 2 * 26 ms. Kept small for a snappy response to DMX changes; still ~200 ms of
-// buffered audio, far more than one decode+SD-read cycle needs.
-const FRAMES_PER_BATCH: usize = 4;
+// Frames per I2S DMA transfer / buffer. While one buffer plays (~FRAMES_PER_BATCH
+// * 26 ms of DMA) the other is refilled, so this is the headroom `fill()` has to
+// decode the next batch and service any SD read latency spike. 8 frames = ~209 ms
+// per buffer, comfortably above the worst-case decode + SD stall. (Startup delay
+// to first audio is dominated by the MP3s' own silent lead-in, not this.)
+const FRAMES_PER_BATCH: usize = 8;
 const OUT_BUF_LEN: usize = MAX_FRAME_SAMPLES * FRAMES_PER_BATCH;
+
+// PIO1 SM0 drives the I2S output. Its FDEBUG.TXSTALL bit latches whenever the
+// state machine runs the TX FIFO dry waiting for the next DMA word - i.e. an
+// audio underrun / audible glitch. Reading + clearing it each buffer turns
+// "sounds like it stutters sometimes" into a hard count.
+const I2S_SM_MASK: u8 = 0b0001;
+
+fn i2s_underran() -> bool {
+    pac::PIO1.fdebug().read().txstall() & I2S_SM_MASK != 0
+}
+
+fn clear_i2s_underrun() {
+    pac::PIO1.fdebug().write(|w| w.set_txstall(I2S_SM_MASK));
+}
 
 /// Maps a DMX value to `(file_index, looping)`:
 /// - `0` => `None` (stop)
@@ -312,8 +329,12 @@ async fn fill(
 }
 
 #[embassy_executor::task]
-pub async fn audio_task(cfg: AudioConfig, r: AudioResources, handle: SdHandle) {
+pub async fn audio_task(cfg: AudioConfig, r: AudioResources, sd_r: SdResources) {
     println!("Audio task started.");
+
+    // Mount here rather than in main(): the returned handle is not Send, and this
+    // task now owns the only reference to it.
+    let handle = sd::init(sd_r);
 
     let Pio { mut common, sm0, .. } = Pio::new(r.pio, AudioIrqs);
     let i2s_program = PioI2sOutProgram::new(&mut common);
@@ -337,17 +358,46 @@ pub async fn audio_task(cfg: AudioConfig, r: AudioResources, handle: SdHandle) {
 
     fill(&cfg, handle, &mut voice, &mut scratch, &mut buf_a).await;
 
+    // The SM stalls continuously until the first DMA transfer feeds the FIFO;
+    // clear that expected startup latch so the counter only sees real underruns.
+    clear_i2s_underrun();
+    let mut underruns: u32 = 0;
+    let mut reported: u32 = 0;
+    let mut last_report = Instant::now();
+
     loop {
         join(
             i2s.write(&buf_a[..]),
             fill(&cfg, handle, &mut voice, &mut scratch, &mut buf_b),
         )
         .await;
+        if i2s_underran() {
+            underruns += 1;
+            clear_i2s_underrun();
+        }
 
         join(
             i2s.write(&buf_b[..]),
             fill(&cfg, handle, &mut voice, &mut scratch, &mut buf_a),
         )
         .await;
+        if i2s_underran() {
+            underruns += 1;
+            clear_i2s_underrun();
+        }
+
+        // Report only when the count moved, and at most every 2s, so a clean run
+        // is silent and a bad run doesn't flood the log (which would make it worse).
+        let now = Instant::now();
+        if underruns != reported && (now - last_report).as_millis() >= 2000 {
+            println!(
+                "AUDIO underruns: {} total (+{} in {}ms)",
+                underruns,
+                underruns - reported,
+                (now - last_report).as_millis(),
+            );
+            reported = underruns;
+            last_report = now;
+        }
     }
 }

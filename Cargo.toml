@@ -18,7 +18,7 @@ panic-probe = ["dep:panic-probe"]
 
 [dependencies]
 # Embassy async runtime for RP2350
-embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thread"] }
+embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thread", "executor-interrupt"] }
 embassy-rp = { version = "0.9", features = ["rt", "rp235xb", "time-driver", "binary-info", "unstable-pac", "critical-section-impl"] }
 embassy-time = { version = "0.5" }
 embassy-sync = { version = "0.7" }

@@ -25,7 +25,9 @@ mod periphs {
 use core::cell::RefCell;
 use core::future::pending;
 
-use embassy_executor::Spawner;
+use embassy_executor::{InterruptExecutor, Spawner};
+use embassy_rp::interrupt;
+use embassy_rp::interrupt::{InterruptExt, Priority};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
 use embassy_sync::mutex::Mutex as AsyncMutex;
@@ -54,6 +56,19 @@ pub static DMX_MATRIX: BlockingMutex<CriticalSectionRawMutex, RefCell<[[u8; 512]
     BlockingMutex::new(RefCell::new([[0u8; 512]; MAX_UNIVERSES]));
 
 static IP_STATE: StaticCell<AsyncMutex<CriticalSectionRawMutex, Option<Ipv4Address>>> = StaticCell::new();
+
+// The audio task runs on its own high-priority interrupt executor so it preempts
+// every thread-mode task (OLED I2C flush, NeoPixel effects, sACN parsing, ...).
+// The I2S PIO FIFO only holds ~180us of samples between DMA transfers; any
+// cooperative task that blocks the shared executor longer than that at a buffer
+// boundary causes an audible underrun. Preemption removes that whole class of
+// glitch. P3 keeps it below the hardware driver IRQs (DMA/timer) it depends on.
+static AUDIO_EXECUTOR: InterruptExecutor = InterruptExecutor::new();
+
+#[interrupt]
+unsafe fn SWI_IRQ_1() {
+    unsafe { AUDIO_EXECUTOR.on_interrupt() };
+}
 
 
 #[embassy_executor::main]
@@ -90,8 +105,13 @@ async fn main(spawner: Spawner) {
     spawner.spawn(periphs::oled::oled_task(r.oled, ip_state)).unwrap(); // OLED
     spawner.spawn(periphs::dmx::dmx_task(r.dmx)).unwrap(); // DMX
 
-    let sd_handle = periphs::sd::init(r.sd); // Mount SD card
-    spawner.spawn(periphs::audio::audio_task(config.audio, r.audio, sd_handle)).unwrap(); // DMX-triggered audio playback
+    // DMX-triggered audio playback - on a dedicated high-priority interrupt
+    // executor so decode/DMA servicing preempts the thread-mode tasks. The SD
+    // card is mounted inside the task: its VolumeManager holds a RefCell (not
+    // Send), so the handle must never leave the executor it's used on.
+    interrupt::SWI_IRQ_1.set_priority(Priority::P3);
+    let audio_spawner = AUDIO_EXECUTOR.start(interrupt::SWI_IRQ_1);
+    audio_spawner.spawn(periphs::audio::audio_task(config.audio, r.audio, r.sd)).unwrap();
 
     spawner.spawn(modules::ask433::ask433_task(r.slot_b_ask433)).unwrap(); // 433MHz receiver test
 
