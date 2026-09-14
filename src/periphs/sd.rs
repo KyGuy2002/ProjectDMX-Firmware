@@ -72,8 +72,11 @@ pub fn init(r: SdResources) -> SdHandle {
     let sd_size = sdcard.num_bytes().expect("failed to get sdcard size");
     println!("SD card size is {} bytes", sd_size);
 
-    // Card is initialized (had to be done at 400kHz) - bump the SPI clock up for data transfer
-    sdcard.spi(|dev| dev.bus_mut().set_frequency(16_000_000));
+    // Card is initialized (had to be done at 400kHz) - bump the SPI clock up for data transfer.
+    // A single sector read is the one truly non-yieldable blocking chunk in the
+    // whole audio pipeline (read_yielding yields between sectors, never during
+    // one), so a faster clock directly caps how long that worst case can run.
+    sdcard.spi(|dev| dev.bus_mut().set_frequency(24_000_000));
 
     let volume_mgr = SdVolumeManager::new_with_limits(sdcard, DummyClock, 0);
     let mgr: &'static SdVolumeManager = VOLUME_MGR.init(volume_mgr);

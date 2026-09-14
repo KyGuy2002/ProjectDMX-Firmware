@@ -19,7 +19,7 @@ use embedded_graphics::primitives::{Line, PrimitiveStyle};
 use ssd1306::{
     prelude::*,
     I2CDisplayInterface,
-    Ssd1306Async,
+    Ssd1306,
 };
 
 
@@ -43,17 +43,19 @@ pub async fn oled_task(r: OledResources, ip_state: &'static AsyncMutex<CriticalS
 
     let interface = I2CDisplayInterface::new(i2c);
 
-    // Async mode: flush() transfers each 16-byte I2C chunk via DMA/IRQ and
-    // awaits it instead of blocking the executor for the whole ~12ms buffer,
-    // so sibling thread-mode tasks (neo_task, audio decode) can run in between.
-    let mut display = Ssd1306Async::new(
+    // Tried async flush() (Ssd1306Async): each flush is 64 sequential 16-byte
+    // I2C chunks, and at 1MHz a chunk transfer (~150us) is apparently shorter
+    // than the async wake/IRQ round-trip overhead - total flush time went up
+    // (12ms -> 16-27ms, one spike to 98ms) with no improvement to neo_task's
+    // lag. Reverted to the plain blocking flush below.
+    let mut display = Ssd1306::new(
         interface,
         DisplaySize128x64,
         DisplayRotation::Rotate0,
     )
     .into_buffered_graphics_mode();
 
-    display.init().await.unwrap();
+    display.init().unwrap();
     display.clear_buffer();
 
     let text_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
@@ -105,7 +107,7 @@ pub async fn oled_task(r: OledResources, ip_state: &'static AsyncMutex<CriticalS
         draw_spinner(&mut display, 64, 28, frame);
 
         let flush_start = Instant::now(); // DIAG: remove after measuring
-        display.flush().await.unwrap();
+        display.flush().unwrap();
         let flush_ms = (Instant::now() - flush_start).as_millis(); // DIAG
         if flush_ms > 3 {
             defmt::println!("DIAG oled flush: {}ms", flush_ms);
