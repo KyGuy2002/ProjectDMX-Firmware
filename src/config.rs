@@ -61,8 +61,8 @@ fn validate(config: &BoardInstanceConfig) -> Result<(), ConfigError> {
     if !(1..=512).contains(&config.audio.start_channel) {
         return Err(ConfigError::Invalid("audio start_channel out of range (expected 1..=512)"));
     }
-    if config.audio.start_channel >= 512 {
-        return Err(ConfigError::Invalid("audio right channel is out of range (expected start_channel < 512)"));
+    if config.audio.start_channel > 510 {
+        return Err(ConfigError::Invalid("audio right channel is out of range (expected start_channel <= 510)"));
     }
 
     let slots = [
@@ -267,6 +267,7 @@ pub struct DmxOutputConfig {
 pub struct AudioConfig {
     pub universe: u16,
     pub start_channel: u16,
+    pub bg_files: Vec<String<MAX_FILENAME_LEN>, MAX_AUDIO_FILES>,
     pub left_files: Vec<String<MAX_FILENAME_LEN>, MAX_AUDIO_FILES>,
     pub right_files: Vec<String<MAX_FILENAME_LEN>, MAX_AUDIO_FILES>,
 }

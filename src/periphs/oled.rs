@@ -107,7 +107,11 @@ pub async fn oled_task(r: OledResources, ip_state: &'static AsyncMutex<CriticalS
             frame = 0;
         }
 
-        Timer::after(Duration::from_millis(90)).await;
+        // Was 90ms; the ~12ms blocking I2C flush every cycle was a continuous
+        // ~12% draw on the thread-mode executor shared with audio decode.
+        // Slower refresh (still smooth for a status display) frees that budget
+        // back for audio without changing anything the OLED shows.
+        Timer::after(Duration::from_millis(300)).await;
     }
 
 

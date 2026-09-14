@@ -42,16 +42,23 @@ const OUT_BUF_LEN: usize = MAX_FRAME_SAMPLES * FRAMES_PER_BATCH;
 
 type OutBuf = [u32; OUT_BUF_LEN];
 
-// The two output buffers are handed back and forth between the decode task and
-// the output task by transferring ownership of a `&'static mut OutBuf` through
-// these channels, rather than sharing them behind a lock - the decode task
-// gets one from EMPTY_CHANNEL, fills it, and posts it to FILLED_CHANNEL; the
-// output task does the reverse. Capacity 2 matches the total buffer count, so
-// neither channel can ever be asked to hold more in flight than exist.
+// The three output buffers are handed back and forth between the decode task
+// and the output task by transferring ownership of a `&'static mut OutBuf`
+// through these channels, rather than sharing them behind a lock - the decode
+// task gets one from EMPTY_CHANNEL, fills it, and posts it to FILLED_CHANNEL;
+// the output task does the reverse. Capacity 3 matches the total buffer count,
+// so neither channel can ever be asked to hold more in flight than exist.
+//
+// Three (not two) so decode can build up to a full extra buffer of lead time:
+// with 3 audio voices plus oled/neo sharing the thread-mode executor, any
+// single fill() cycle can occasionally run long (e.g. an oled flush landing
+// mid-decode) - the third buffer absorbs that without the I2S side underrunning,
+// as long as decode keeps up on average.
 static BUF_A: StaticCell<OutBuf> = StaticCell::new();
 static BUF_B: StaticCell<OutBuf> = StaticCell::new();
-static FILLED_CHANNEL: Channel<CriticalSectionRawMutex, &'static mut OutBuf, 2> = Channel::new();
-static EMPTY_CHANNEL: Channel<CriticalSectionRawMutex, &'static mut OutBuf, 2> = Channel::new();
+static BUF_C: StaticCell<OutBuf> = StaticCell::new();
+static FILLED_CHANNEL: Channel<CriticalSectionRawMutex, &'static mut OutBuf, 3> = Channel::new();
+static EMPTY_CHANNEL: Channel<CriticalSectionRawMutex, &'static mut OutBuf, 3> = Channel::new();
 
 // PIO1 SM0 drives the I2S output. Its FDEBUG.TXSTALL bit latches whenever the
 // state machine runs the TX FIFO dry waiting for the next DMA word - i.e. an
@@ -71,40 +78,28 @@ fn clear_i2s_underrun() {
 enum PlaybackMode {
     Once,
     Loop,
-    Both,
-    LoopBoth,
 }
 
 impl PlaybackMode {
     fn loops(self) -> bool {
-        matches!(self, PlaybackMode::Loop | PlaybackMode::LoopBoth)
-    }
-
-    fn shared(self) -> bool {
-        matches!(self, PlaybackMode::Both | PlaybackMode::LoopBoth)
+        matches!(self, PlaybackMode::Loop)
     }
 }
 
 /// Maps a DMX value to `(file_index, mode)`:
 /// - `0` => `None` (stop)
-/// - `1..=64` => `(v - 1, Once)`
-/// - `65..=128` => `(v - 65, Loop)`
-/// - `129..=192` => `(v - 129, Both)` (route to both outputs)
-/// - `193..=255` => `(v - 193, LoopBoth)` (loop, routed to both outputs)
+/// - `1..=128` => `(v - 1, Once)`
+/// - `129..=255` => `(v - 129, Loop)`
 /// - resolved index past the end of the list => `None` (stop)
 fn decode_value(v: u8, num_files: usize) -> Option<(usize, PlaybackMode)> {
     if v == 0 {
         return None;
     }
 
-    let (idx, mode) = if v <= 64 {
+    let (idx, mode) = if v <= 128 {
         ((v - 1) as usize, PlaybackMode::Once)
-    } else if v <= 128 {
-        ((v - 65) as usize, PlaybackMode::Loop)
-    } else if v <= 192 {
-        ((v - 129) as usize, PlaybackMode::Both)
     } else {
-        ((v - 193) as usize, PlaybackMode::LoopBoth)
+        ((v - 129) as usize, PlaybackMode::Loop)
     };
 
     (idx < num_files).then_some((idx, mode))
@@ -358,41 +353,64 @@ fn reconcile(
     }
 }
 
-/// Reads both DMX channels, reconciles each voice independently, and renders a
-/// full stereo `out` buffer. Yields once per frame.
+/// Reads all three DMX channels, reconciles each voice independently, and
+/// renders a full stereo `out` buffer. `bg_voice` is mixed into both outputs;
+/// `left_voice`/`right_voice` are routed to their own output only. Yields once
+/// per frame.
 async fn fill(
     cfg: &AudioConfig,
     handle: SdHandle,
+    bg_voice: &mut Option<Voice>,
     left_voice: &mut Option<Voice>,
     right_voice: &mut Option<Voice>,
+    bg_failed_selection: &mut Option<(usize, PlaybackMode)>,
     left_failed_selection: &mut Option<(usize, PlaybackMode)>,
     right_failed_selection: &mut Option<(usize, PlaybackMode)>,
     scratch: &mut [f32; MAX_SAMPLES_PER_FRAME],
     out: &mut [u32; OUT_BUF_LEN],
 ) {
-    let channels = read_channels::<2>(cfg.universe as usize, cfg.start_channel as usize);
+    let channels = read_channels::<3>(cfg.universe as usize, cfg.start_channel as usize);
+    reconcile(
+        bg_voice,
+        bg_failed_selection,
+        handle,
+        &cfg.bg_files,
+        channels[0],
+    );
     reconcile(
         left_voice,
         left_failed_selection,
         handle,
         &cfg.left_files,
-        channels[0],
+        channels[1],
     );
     reconcile(
         right_voice,
         right_failed_selection,
         handle,
         &cfg.right_files,
-        channels[1],
+        channels[2],
     );
-
-    let left_shared = left_voice.as_ref().is_some_and(|voice| voice.mode.shared());
-    let right_shared = right_voice.as_ref().is_some_and(|voice| voice.mode.shared());
 
     let mut pos = 0;
     while pos + MAX_FRAME_SAMPLES <= OUT_BUF_LEN {
+        let mut bg = [0f32; MAX_FRAME_SAMPLES];
         let mut left = [0f32; MAX_FRAME_SAMPLES];
         let mut right = [0f32; MAX_FRAME_SAMPLES];
+
+        let bg_produced = match bg_voice {
+            Some(v) => v.produce(&mut bg, MAX_FRAME_SAMPLES, scratch).await,
+            None => 0,
+        };
+        for sample in &mut bg[bg_produced..] {
+            *sample = 0.0;
+        }
+        // Decoding a frame is pure CPU with no await inside unless an SD refill
+        // is due, so three voices' worth back-to-back can hold the thread-mode
+        // executor long enough to starve sibling tasks (neo_task's pixel timing,
+        // oled flush). Yielding between each voice bounds the worst case to one
+        // voice's decode instead of three.
+        yield_now().await;
 
         let left_produced = match left_voice {
             Some(v) => v.produce(&mut left, MAX_FRAME_SAMPLES, scratch).await,
@@ -401,6 +419,7 @@ async fn fill(
         for sample in &mut left[left_produced..] {
             *sample = 0.0;
         }
+        yield_now().await;
 
         let right_produced = match right_voice {
             Some(v) => v.produce(&mut right, MAX_FRAME_SAMPLES, scratch).await,
@@ -409,21 +428,16 @@ async fn fill(
         for sample in &mut right[right_produced..] {
             *sample = 0.0;
         }
+        yield_now().await;
 
         for i in 0..MAX_FRAME_SAMPLES {
-            let left_sample = left[i];
-            let right_sample = right[i];
-            if left_shared {
-                right[i] += left_sample;
-            }
-            if right_shared {
-                left[i] += right_sample;
-            }
+            let left_mixed = left[i] + bg[i];
+            let right_mixed = right[i] + bg[i];
 
             let left_s16 =
-                (left[i].clamp(-1.0, 1.0) * VOLUME * 32767.0) as i32 as i16 as u16;
+                (left_mixed.clamp(-1.0, 1.0) * VOLUME * 32767.0) as i32 as i16 as u16;
             let right_s16 =
-                (right[i].clamp(-1.0, 1.0) * VOLUME * 32767.0) as i32 as i16 as u16;
+                (right_mixed.clamp(-1.0, 1.0) * VOLUME * 32767.0) as i32 as i16 as u16;
             out[pos + i] = ((left_s16 as u32) << 16) | (right_s16 as u32);
         }
 
@@ -446,24 +460,30 @@ pub async fn audio_decode_task(cfg: AudioConfig, sd_r: SdResources) {
     // task now owns the only reference to it.
     let handle = sd::init(sd_r);
 
+    let mut bg_voice: Option<Voice> = None;
     let mut left_voice: Option<Voice> = None;
     let mut right_voice: Option<Voice> = None;
+    let mut bg_failed_selection: Option<(usize, PlaybackMode)> = None;
     let mut left_failed_selection: Option<(usize, PlaybackMode)> = None;
     let mut right_failed_selection: Option<(usize, PlaybackMode)> = None;
     let mut scratch = [0f32; MAX_SAMPLES_PER_FRAME];
 
     let buf_a = BUF_A.init([0u32; OUT_BUF_LEN]);
     let buf_b = BUF_B.init([0u32; OUT_BUF_LEN]);
+    let buf_c = BUF_C.init([0u32; OUT_BUF_LEN]);
     EMPTY_CHANNEL.send(buf_a).await;
     EMPTY_CHANNEL.send(buf_b).await;
+    EMPTY_CHANNEL.send(buf_c).await;
 
     loop {
         let buf = EMPTY_CHANNEL.receive().await;
         fill(
             &cfg,
             handle,
+            &mut bg_voice,
             &mut left_voice,
             &mut right_voice,
+            &mut bg_failed_selection,
             &mut left_failed_selection,
             &mut right_failed_selection,
             &mut scratch,
