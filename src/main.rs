@@ -82,26 +82,48 @@ unsafe fn SWI_IRQ_1() {
     unsafe { AUDIO_EXECUTOR.on_interrupt() };
 }
 
-// DIAG: temporary - measures whether the *default thread-mode executor*
-// (where neo_task, dmx_task, oled_task etc. all run) is being starved, and by
-// how much, independent of any NeoPixel-specific code. If this task's actual
-// tick period spikes above ~2x its requested delay, thread-mode is being
-// preempted/starved for that long - most likely by AUDIO_EXECUTOR (P3
-// interrupt priority) running long between yields. Remove once diagnosed.
+// Published by cpu_monitor_task, read by oled_task for the on-screen readout.
+// A rough "thread-mode load" percentage, not true CPU usage - see below.
+pub static CPU_STALL_PCT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+// Measures whether the *default thread-mode executor* (where neo_task,
+// dmx_task, oled_task, audio_decode_task etc. all run) is being starved, and
+// by how much. Ticks every 5ms; any tick that takes longer means something
+// else (most likely audio decode or an oled flush) held the executor busy in
+// between without yielding. The overrun accumulated over each rolling second
+// is published as CPU_STALL_PCT for the OLED readout - it undercounts true
+// utilization (bursts shorter than 5ms never show up), but it's a direct,
+// cheap proxy for "how close is thread-mode to starving something."
 #[embassy_executor::task]
-async fn diag_heartbeat_task() {
+async fn cpu_monitor_task() {
     use embassy_time::{Instant, Timer};
+    use core::sync::atomic::Ordering;
     const EXPECTED_MS: u64 = 5;
+    const WINDOW_MS: u64 = 1000;
 
     let mut last = Instant::now();
+    let mut window_start = last;
+    let mut overrun_ms: u64 = 0;
+
     loop {
         Timer::after_millis(EXPECTED_MS).await;
         let now = Instant::now();
         let elapsed = (now - last).as_millis();
+        if elapsed > EXPECTED_MS {
+            overrun_ms += elapsed - EXPECTED_MS;
+        }
         if elapsed > EXPECTED_MS * 2 {
             warn!("DIAG thread-mode stall: {}ms (wanted {}ms)", elapsed, EXPECTED_MS);
         }
         last = now;
+
+        let window_elapsed = (now - window_start).as_millis();
+        if window_elapsed >= WINDOW_MS {
+            let pct = ((overrun_ms * 100) / window_elapsed).min(100) as u8;
+            CPU_STALL_PCT.store(pct, Ordering::Relaxed);
+            overrun_ms = 0;
+            window_start = now;
+        }
     }
 }
 
@@ -140,7 +162,7 @@ async fn main(spawner: Spawner) {
     let ip_state = IP_STATE.init(AsyncMutex::new(None));
     spawner.spawn(periphs::oled::oled_task(r.oled, ip_state)).unwrap(); // OLED
     spawner.spawn(periphs::dmx::dmx_task(r.dmx)).unwrap(); // DMX
-    spawner.spawn(diag_heartbeat_task()).unwrap(); // DIAG: remove after measuring
+    spawner.spawn(cpu_monitor_task()).unwrap();
 
     // DMX-triggered audio playback, split across two tasks (see the
     // AUDIO_EXECUTOR comment above for why): the I2S DMA feed runs on its own
