@@ -176,7 +176,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(periphs::audio::audio_decode_task(config.audio, r.sd)).unwrap();
 
     if config.input.source == InputProtocol::Artnet || config.input.source == InputProtocol::sACN {
-        let stack = periphs::eth::start_eth(&spawner, r.eth, ip_state).await; // Ethernet
+        let stack = periphs::eth::start_eth(&spawner, r.eth, &config.network, ip_state).await; // Ethernet
         periphs::sensors::start_sensors(&spawner, r.sensors); // Sensors
         spawner.spawn(periphs::tcp_cmds::tcp_cmds_task(stack)).unwrap(); // TCP Commands
 

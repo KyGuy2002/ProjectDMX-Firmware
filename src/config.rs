@@ -1,4 +1,4 @@
-use core::net::IpAddr;
+use core::net::{IpAddr, Ipv4Addr};
 
 use heapless::{String, Vec};
 use serde::{Deserialize, Serialize};
@@ -52,6 +52,11 @@ fn validate(config: &BoardInstanceConfig) -> Result<(), ConfigError> {
     // Universes (1..=MAX_UNIVERSES) and channels (1..=512) are 1-based everywhere
     // in the config, matching fixture / console addressing; `read_channels` and
     // the DMX output loop convert to the 0-based matrix index.
+    // Leave room for at least two hosts (this board + the sender); /31 and /32
+    // have no usable host addresses in a normal subnet.
+    if !(1..=30).contains(&config.network.prefix_len) {
+        return Err(ConfigError::Invalid("network prefix_len out of range (expected 1..=30)"));
+    }
     if !(1..=MAX_UNIVERSES).contains(&(config.dmx_output.universe as usize)) {
         return Err(ConfigError::Invalid("dmx_output universe out of range (expected 1..=MAX_UNIVERSES)"));
     }
@@ -252,6 +257,16 @@ pub enum InputProtocol {
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub struct InputConfig {
     pub source: InputProtocol,
+}
+
+/// Static IPv4 address for the Ethernet port - there is no DHCP, so the board
+/// works on a bare switch or direct cable with no router. No gateway/DNS: the
+/// controller only talks to devices on its own subnet.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct NetworkConfig {
+    pub ip: Ipv4Addr,
+    /// Subnet size in bits, e.g. 24 for 255.255.255.0.
+    pub prefix_len: u8,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
@@ -517,6 +532,7 @@ pub struct Chataigne {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct BoardInstanceConfig {
     pub input: InputConfig,
+    pub network: NetworkConfig,
     pub chataigne: Chataigne,
     pub dmx_output: DmxOutputConfig,
     pub audio: AudioConfig,

@@ -3,7 +3,7 @@ use core::convert::Infallible;
 use defmt::info;
 
 use embassy_executor::Spawner;
-use embassy_net::{Config, Stack, StackResources};
+use embassy_net::{Config, Ipv4Cidr, Stack, StackResources, StaticConfigV4};
 use embassy_net_wiznet::chip::W5500;
 use embassy_net_wiznet::{Device, Runner, State};
 
@@ -20,6 +20,7 @@ use embassy_net::Ipv4Address;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::mutex::Mutex as AsyncMutex;
 
+use crate::config::NetworkConfig;
 use crate::hardware::{EthResources, EthSpi};
 
 struct FakeInt;
@@ -88,6 +89,7 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device<'static>>) -> 
 pub async fn start_eth(
     spawner: &Spawner,
     r: EthResources,
+    network: &NetworkConfig,
     ip_state: &'static AsyncMutex<CriticalSectionRawMutex, Option<Ipv4Address>>
 ) -> Stack<'static> {
     info!("Starting W5500 Ethernet");
@@ -130,22 +132,23 @@ pub async fn start_eth(
 
     let (stack, net_runner) = embassy_net::new(
         device,
-        Config::dhcpv4(Default::default()),
+        Config::ipv4_static(StaticConfigV4 {
+            address: Ipv4Cidr::new(network.ip, network.prefix_len),
+            gateway: None,
+            dns_servers: Default::default(),
+        }),
         NET_RESOURCES.init(StackResources::new()),
         seed,
     );
 
     spawner.spawn(net_task(net_runner)).unwrap();
 
-    info!("Waiting for DHCP");
+    // Static config is applied immediately, independent of link state, so a
+    // missing cable no longer holds up boot.
     stack.wait_config_up().await;
 
-    if let Some(config) = stack.config_v4() {
-        info!("Ethernet IP: {}", config.address.address());
-
-        let mut ip = ip_state.lock().await;
-        *ip = Some(config.address.address());
-    }
+    info!("Ethernet IP: {}/{}", network.ip, network.prefix_len);
+    *ip_state.lock().await = Some(network.ip);
 
     stack
 }

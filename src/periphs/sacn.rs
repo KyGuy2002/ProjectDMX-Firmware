@@ -193,6 +193,11 @@ pub async fn sacn_task(stack: Stack<'static>) -> ! {
 
     socket.bind(SACN_PORT).unwrap();
 
+    // The static IP is applied before the cable is necessarily up. The IGMP
+    // reports sent on join would be lost if the link is down, and with no router
+    // there is no querier to ask for them again - so wait for link first.
+    stack.wait_link_up().await;
+
     // Join the multicast address for every firmware universe.
     for sacn_universe in 1..=MAX_UNIVERSES {
         let multicast_address = sacn_multicast_address(sacn_universe);
