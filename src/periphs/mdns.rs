@@ -8,17 +8,19 @@
 //! socket per port, so a second socket on 5353 would never see the replies to
 //! our own queries.
 
+use core::cell::RefCell;
 use core::fmt::Write as _;
 
 use defmt::{info, warn};
 use embassy_futures::select::{Either3, select3};
 use embassy_net::udp::{PacketMetadata, UdpSocket};
 use embassy_net::{IpAddress, IpEndpoint, Ipv4Address, Stack};
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, ThreadModeRawMutex};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer, with_timeout};
-use heapless::String;
+use heapless::{String, Vec};
 use static_cell::StaticCell;
 
 use crate::periphs::eth::{NET_IDENTITY, NetIdentity};
@@ -39,6 +41,18 @@ const TTL_OTHER: u32 = 4500;
 
 const QUERY_ATTEMPTS: u8 = 3;
 const QUERY_INTERVAL: Duration = Duration::from_secs(1);
+
+/// The Falcon Player host to watch for; the web UI shows whether it's answering.
+pub const FPP_HOST: &str = "fpp.local";
+/// The tail of every instance name: "<instance>._pdmx._tcp.local".
+const SERVICE_SUFFIX: &str = "._pdmx._tcp.local";
+/// How often to ask who's out there.
+const BROWSE_INTERVAL: Duration = Duration::from_secs(5);
+/// A peer (or FPP) not heard from for this long, i.e. a few missed browses, is
+/// gone. We send no goodbye packets, so this is the only way one disappears.
+const SEEN_TTL: Duration = Duration::from_secs(20);
+pub const MAX_PEERS: usize = 8;
+const PEER_NAME_LEN: usize = 32;
 
 const TYPE_A: u16 = 1;
 const TYPE_PTR: u16 = 12;
@@ -86,6 +100,45 @@ pub async fn resolve(host: &str) -> Option<Ipv4Address> {
     // time only matters if the task isn't running.
     let give_up = QUERY_INTERVAL * (QUERY_ATTEMPTS as u32 + 2);
     with_timeout(give_up, RESOLVE_RESP.wait()).await.ok().flatten()
+}
+
+// -------------------------------------------------------------------------
+// Discovery API (other PDMX controllers + FPP, for the web UI)
+// -------------------------------------------------------------------------
+
+// ThreadModeRawMutex rather than a critical section: both users (this task and
+// the web tasks) run in thread mode, and a critical section would mask the
+// interrupts the audio DMA feed depends on. It panics if ever locked from an
+// interrupt, which is the right failure for a mistake like that.
+static DISCOVERY: BlockingMutex<ThreadModeRawMutex, RefCell<Discovery>> =
+    BlockingMutex::new(RefCell::new(Discovery::new()));
+
+/// Other PDMX controllers heard from recently.
+pub fn peers() -> Vec<Peer, MAX_PEERS> {
+    let now = Instant::now();
+    DISCOVERY.lock(|d| {
+        d.borrow().peers.iter().filter(|p| now - p.last_seen < SEEN_TTL).cloned().collect()
+    })
+}
+
+/// FPP's address, if it has answered recently.
+pub fn fpp_ip() -> Option<Ipv4Address> {
+    let now = Instant::now();
+    DISCOVERY.lock(|d| {
+        let d = d.borrow();
+        d.fpp_seen.filter(|&seen| now - seen < SEEN_TTL).and(d.fpp_ip)
+    })
+}
+
+impl Discovery {
+    /// Drops what's gone quiet so its slot can be reused.
+    fn prune(&mut self, now: Instant) {
+        self.peers.retain(|p| now - p.last_seen < SEEN_TTL);
+        if self.fpp_seen.is_some_and(|seen| now - seen >= SEEN_TTL) {
+            self.fpp_seen = None;
+            self.fpp_ip = None;
+        }
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -159,15 +212,19 @@ pub async fn mdns_task(stack: Stack<'static>) -> ! {
     }
 
     let mut pending: Option<Pending> = None;
+    let mut next_browse = Instant::now();
 
     loop {
         let wake = pending
             .as_ref()
-            .map_or(Instant::now() + Duration::from_secs(3600), |p| p.next_at);
+            .map_or(next_browse, |p| p.next_at.min(next_browse));
 
         match select3(socket.recv_from(&mut rx), RESOLVE_REQ.wait(), Timer::at(wake)).await {
             Either3::First(Ok((n, _))) => {
                 let packet = &rx[..n];
+
+                let now = Instant::now();
+                DISCOVERY.lock(|d| apply_response(packet, &ident.instance, &mut d.borrow_mut(), now));
 
                 if let Some(p) = &pending {
                     if let Some(ip) = find_a_record(packet, &p.name) {
@@ -187,17 +244,29 @@ pub async fn mdns_task(stack: Stack<'static>) -> ! {
                 pending = Some(Pending { name, sent: 0, next_at: Instant::now() });
             }
             Either3::Third(()) => {
-                if let Some(p) = pending.as_mut() {
+                let now = Instant::now();
+
+                if let Some(p) = pending.as_mut().filter(|p| p.next_at <= now) {
                     if p.sent >= QUERY_ATTEMPTS {
                         RESOLVE_RESP.signal(None);
                         pending = None;
                     } else {
-                        if let Some(len) = build_query(&mut tx, &p.name) {
+                        if let Some(len) = build_query(&mut tx, &[(p.name.as_str(), TYPE_A)]) {
                             send(&socket, &tx[..len], dest).await;
                         }
                         p.sent += 1;
-                        p.next_at = Instant::now() + QUERY_INTERVAL;
+                        p.next_at = now + QUERY_INTERVAL;
                     }
+                }
+
+                if next_browse <= now {
+                    // One packet asks for both: other controllers and FPP.
+                    let questions = [(SERVICE_TYPE, TYPE_PTR), (FPP_HOST, TYPE_A)];
+                    if let Some(len) = build_query(&mut tx, &questions) {
+                        send(&socket, &tx[..len], dest).await;
+                    }
+                    DISCOVERY.lock(|d| d.borrow_mut().prune(now));
+                    next_browse = now + BROWSE_INTERVAL;
                 }
             }
         }
@@ -341,21 +410,42 @@ fn write_record(w: &mut Writer, rec: u8, names: &Names, ip: Ipv4Address) -> Opti
 // Resolver: query out, response in
 // -------------------------------------------------------------------------
 
-fn build_query(out: &mut [u8], name: &str) -> Option<usize> {
+fn build_query(out: &mut [u8], questions: &[(&str, u16)]) -> Option<usize> {
     let mut w = Writer { buf: out, pos: 0 };
     w.u16(0)?; // id
     w.u16(0)?; // flags: standard query
-    w.u16(1)?; // one question
+    w.u16(questions.len() as u16)?;
     w.bytes(&[0; 6])?; // no answer/authority/additional records
-    w.name(name)?;
-    w.u16(TYPE_A)?;
-    w.u16(CLASS_IN)?;
+    for (name, qtype) in questions {
+        w.name(name)?;
+        w.u16(*qtype)?;
+        w.u16(CLASS_IN)?;
+    }
     Some(w.pos)
 }
 
 /// The IPv4 address carried by an A record for `wanted` anywhere in a response
 /// packet (answer, authority or additional section).
 fn find_a_record(packet: &[u8], wanted: &str) -> Option<Ipv4Address> {
+    let mut found = None;
+    // A malformed tail doesn't invalidate a match that came before it.
+    let _ = for_each_record(packet, |name, rtype, at, len| {
+        if found.is_none() && rtype == TYPE_A && len == 4 && name.eq_ignore_ascii_case(wanted) {
+            found = a_record(packet, at);
+        }
+    });
+    found
+}
+
+fn a_record(packet: &[u8], at: usize) -> Option<Ipv4Address> {
+    let octets = packet.get(at..at + 4)?;
+    Some(Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]))
+}
+
+/// Calls `f(name, type, rdata_offset, rdata_len)` for every record in a response
+/// packet, in any section. `None` if it isn't a response or is malformed; records
+/// before the malformed part have already been visited.
+fn for_each_record(packet: &[u8], mut f: impl FnMut(&str, u16, usize, usize)) -> Option<()> {
     if packet.len() < 12 || packet[2] & 0x80 == 0 {
         return None;
     }
@@ -378,14 +468,118 @@ fn find_a_record(packet: &[u8], wanted: &str) -> Option<Ipv4Address> {
         let rtype = u16::from_be_bytes([fixed[0], fixed[1]]);
         let rdlen = u16::from_be_bytes([fixed[8], fixed[9]]) as usize;
         pos += 10;
-        let rdata = packet.get(pos..pos + rdlen)?;
+        packet.get(pos..pos + rdlen)?;
+        f(&name, rtype, pos, rdlen);
         pos += rdlen;
-
-        if rtype == TYPE_A && rdlen == 4 && name.eq_ignore_ascii_case(wanted) {
-            return Some(Ipv4Address::new(rdata[0], rdata[1], rdata[2], rdata[3]));
-        }
     }
-    None
+    Some(())
+}
+
+// -------------------------------------------------------------------------
+// Discovery: what other controllers / FPP are saying
+// -------------------------------------------------------------------------
+
+/// Another PDMX controller on the network.
+#[derive(Clone)]
+pub struct Peer {
+    /// "PDMX Controller A1B2"
+    pub instance: String<PEER_NAME_LEN>,
+    /// "pdmx-a1b2.local"; empty until its SRV record has been seen.
+    pub host: String<PEER_NAME_LEN>,
+    pub ip: Option<Ipv4Address>,
+    last_seen: Instant,
+}
+
+struct Discovery {
+    peers: Vec<Peer, MAX_PEERS>,
+    fpp_ip: Option<Ipv4Address>,
+    fpp_seen: Option<Instant>,
+}
+
+impl Discovery {
+    const fn new() -> Self {
+        Self { peers: Vec::new(), fpp_ip: None, fpp_seen: None }
+    }
+
+    /// The peer called `label`, added if there's room, and marked as just seen.
+    fn touch(&mut self, label: &str, now: Instant) -> Option<&mut Peer> {
+        let index = match self.peers.iter().position(|p| p.instance.as_str() == label) {
+            Some(index) => index,
+            None => {
+                let mut instance = String::new();
+                instance.push_str(label).ok()?;
+                let peer = Peer { instance, host: String::new(), ip: None, last_seen: now };
+                self.peers.push(peer).ok()?;
+                self.peers.len() - 1
+            }
+        };
+        let peer = &mut self.peers[index];
+        peer.last_seen = now;
+        Some(peer)
+    }
+}
+
+/// "PDMX Controller A1B2" out of "PDMX Controller A1B2._pdmx._tcp.local".
+fn instance_label(fqdn: &str) -> Option<&str> {
+    let cut = fqdn.len().checked_sub(SERVICE_SUFFIX.len())?;
+    let (label, suffix) = (fqdn.get(..cut)?, fqdn.get(cut..)?);
+    (!label.is_empty() && suffix.eq_ignore_ascii_case(SERVICE_SUFFIX)).then_some(label)
+}
+
+/// Learns from any response on the wire, ours or someone else's: which PDMX
+/// controllers exist, where they live, and whether FPP is answering. Everything
+/// in `packet` is untrusted, so every lookup is bounds-checked and a bad packet
+/// just teaches us nothing.
+fn apply_response(packet: &[u8], own_instance: &str, d: &mut Discovery, now: Instant) {
+    // Two passes so it doesn't matter what order the sender listed records in:
+    // first who exists and their host names, then host addresses.
+    let _ = for_each_record(packet, |name, rtype, at, len| {
+        let mut target: String<MAX_NAME> = String::new();
+        match rtype {
+            TYPE_PTR if name.eq_ignore_ascii_case(SERVICE_TYPE) => {
+                if read_name(packet, at, &mut target).is_none() {
+                    return;
+                }
+                if let Some(label) = instance_label(&target).filter(|l| *l != own_instance) {
+                    d.touch(label, now);
+                }
+            }
+            TYPE_SRV if len > 6 => {
+                let Some(label) = instance_label(name).filter(|l| *l != own_instance) else {
+                    return;
+                };
+                // SRV rdata: priority, weight, port, then the target host name.
+                if read_name(packet, at + 6, &mut target).is_none() {
+                    return;
+                }
+                if let Some(peer) = d.touch(label, now) {
+                    peer.host.clear();
+                    // Too long for the field just leaves it empty.
+                    let _ = peer.host.push_str(&target);
+                }
+            }
+            _ => {}
+        }
+    });
+
+    let _ = for_each_record(packet, |name, rtype, at, len| {
+        if rtype != TYPE_A || len != 4 {
+            return;
+        }
+        let Some(ip) = a_record(packet, at) else {
+            return;
+        };
+
+        if name.eq_ignore_ascii_case(FPP_HOST) {
+            d.fpp_ip = Some(ip);
+            d.fpp_seen = Some(now);
+        }
+        for peer in d.peers.iter_mut() {
+            if peer.host.eq_ignore_ascii_case(name) {
+                peer.ip = Some(ip);
+            }
+        }
+    });
 }
 
 // -------------------------------------------------------------------------

@@ -18,6 +18,7 @@ use heapless::String;
 
 use crate::config::InputProtocol;
 use crate::periphs::eth::{NET_IDENTITY, NetIdentity};
+use crate::periphs::mdns;
 use crate::periphs::sensors::*;
 use crate::periphs::tcp_cmds::{ChataigneStatus, chataigne_status};
 
@@ -27,18 +28,39 @@ pub const HTTP_PORT: u16 = 80;
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Whole HTTP response (headers + body) is built in one buffer.
-type Response = String<1536>;
+type Response = String<2048>;
+
+/// Stop adding peers to /status when this little room is left, so a pile of
+/// long or escape-heavy names truncates the list instead of losing the reply.
+const PEER_ROOM: usize = 256;
 
 /// Polls /status once a second. A `setTimeout` chain instead of `setInterval`
 /// so a slow response can never stack up overlapping requests.
+///
+/// Each request is aborted after 1.5s (a browser will otherwise wait a minute or
+/// more on an unreachable host), and a separate 0.5s watchdog flips the page to
+/// OFFLINE once nothing has come back for 2s, whether or not a request is
+/// still hanging. Stale values are dimmed rather than cleared.
+///
+/// Peer names come off the network, so they only ever go in via `textContent` /
+/// `append` of a string, never as HTML.
 const PAGE_SCRIPT: &str = r#"<script>
-async function t(){try{
-let s=await(await fetch('/status',{cache:'no-store'})).json();
+let last=Date.now();
+function A(ip,text){let a=document.createElement('a');a.href='http://'+ip+'/';a.textContent=text;return a}
+function off(){let d=Date.now()-last,o=d>2000;
+m.style.opacity=o?.35:1;e.textContent=o?'OFFLINE - no response for '+Math.floor(d/1000)+'s':''}
+async function t(){let ctl=new AbortController(),to=setTimeout(()=>ctl.abort(),1500);try{
+let s=await(await fetch('/status',{cache:'no-store',signal:ctl.signal})).json();
 u.textContent=s.up;i.textContent=s.input;c.textContent=s.chataigne;
-b.textContent=s.buttons.map((x,n)=>(n+1)+(x?'●':'○')).join('  ');e.textContent=''
-}catch(_){e.textContent='Connection lost, retrying...'}
-setTimeout(t,1000)}
-t()
+b.textContent=s.buttons.map((x,n)=>(n+1)+(x?'●':'○')).join('  ');
+if(s.fpp)f.replaceChildren(A(s.fpp,'online ('+s.fpp+')'));else f.textContent='offline';
+l.replaceChildren(...s.peers.map(q=>{let li=document.createElement('li');li.append(q.n+' - ');
+li.append(q.ip?A(q.ip,q.h+' ('+q.ip+')'):q.h);return li}));
+if(!s.peers.length)l.textContent='none found';
+last=Date.now()
+}catch(_){}
+clearTimeout(to);off();setTimeout(t,1000)}
+setInterval(off,500);t()
 </script>"#;
 
 /// Two listeners: browsers open a second, idle speculative connection alongside
@@ -127,16 +149,19 @@ fn write_page(out: &mut Response, ident: &NetIdentity) -> fmt::Result {
         "<!doctype html><meta name=viewport content=\"width=device-width,initial-scale=1\">\
          <title>{instance}</title>\
          <body style=\"font-family:sans-serif;margin:2em\">\
-         <h1>{instance}</h1>\
+         <p id=e style=\"color:#b00;font-weight:bold\"></p>\
+         <div id=m><h1>{instance}</h1>\
          <p>{host}.local &middot; {ip}</p>\
          <p>Uptime: <span id=u></span>s</p>\
          <p>Input: <span id=i></span></p>\
          <p>Chataigne: <span id=c></span></p>\
          <p>Buttons: <span id=b style=\"white-space:pre\"></span></p>\
-         <p id=e style=color:#b00></p>",
+         <p>FPP ({fpp}): <span id=f></span></p>\
+         <h3>Other controllers</h3><ul id=l></ul></div>",
         instance = ident.instance,
         host = ident.hostname,
         ip = ident.ip,
+        fpp = mdns::FPP_HOST,
     )?;
     push(out, PAGE_SCRIPT)
 }
@@ -183,5 +208,44 @@ fn write_status(out: &mut Response) -> fmt::Result {
         let sep = if n == 0 { "" } else { "," };
         write!(out, "{}{}", sep, button.load(core::sync::atomic::Ordering::Relaxed))?;
     }
+
+    push(out, "],\"fpp\":")?;
+    match mdns::fpp_ip() {
+        Some(ip) => write!(out, "\"{}\"", ip)?,
+        None => push(out, "null")?,
+    }
+
+    push(out, ",\"peers\":[")?;
+    for (n, peer) in mdns::peers().iter().enumerate() {
+        if out.capacity() - out.len() < PEER_ROOM {
+            break;
+        }
+        if n > 0 {
+            push(out, ",")?;
+        }
+        push(out, "{\"n\":")?;
+        write_json_str(out, &peer.instance)?;
+        push(out, ",\"h\":")?;
+        write_json_str(out, &peer.host)?;
+        match peer.ip {
+            Some(ip) => write!(out, ",\"ip\":\"{}\"}}", ip)?,
+            None => push(out, ",\"ip\":null}")?,
+        }
+    }
     push(out, "]}")
+}
+
+/// Writes `s` as a JSON string. Peer names are attacker-controlled network
+/// data, so quotes, backslashes and control characters must be escaped.
+fn write_json_str(out: &mut Response, s: &str) -> fmt::Result {
+    push(out, "\"")?;
+    for c in s.chars() {
+        match c {
+            '"' => push(out, "\\\"")?,
+            '\\' => push(out, "\\\\")?,
+            c if (c as u32) < 0x20 => write!(out, "\\u{:04x}", c as u32)?,
+            c => out.push(c).map_err(|_| fmt::Error)?,
+        }
+    }
+    push(out, "\"")
 }
