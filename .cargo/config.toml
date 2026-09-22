@@ -12,3 +12,6 @@ target = "thumbv8m.main-none-eabihf"
 
 [env]
 DEFMT_LOG = "warn,pico_rust_template=info"
+# smoltcp defaults to 4 multicast groups; sACN joins one per universe (MAX_UNIVERSES)
+# and mDNS needs 224.0.0.251 on top of that.
+SMOLTCP_IFACE_MAX_MULTICAST_GROUP_COUNT = "8"

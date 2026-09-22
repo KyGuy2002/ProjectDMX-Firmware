@@ -13,6 +13,8 @@ mod pixel_mapping_config;
 mod periphs {
     pub mod dmx;
     pub mod eth;
+    pub mod http;
+    pub mod mdns;
     pub mod artnet;
     pub mod sacn;
     pub mod oled;
@@ -30,10 +32,7 @@ use embassy_rp::interrupt;
 use embassy_rp::interrupt::{InterruptExt, Priority};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex as BlockingMutex;
-use embassy_sync::mutex::Mutex as AsyncMutex;
 use embassy_sync::once_lock::OnceLock;
-use embassy_net::Ipv4Address;
-use static_cell::StaticCell;
 
 use config::*;
 use modules::*;
@@ -57,8 +56,6 @@ pub const MAX_PIXELS: usize = 256;
 
 pub static DMX_MATRIX: BlockingMutex<CriticalSectionRawMutex, RefCell<[[u8; 512]; MAX_UNIVERSES]>> =
     BlockingMutex::new(RefCell::new([[0u8; 512]; MAX_UNIVERSES]));
-
-static IP_STATE: StaticCell<AsyncMutex<CriticalSectionRawMutex, Option<Ipv4Address>>> = StaticCell::new();
 
 // Only the I2S DMA feed (audio_output_task) runs on this interrupt executor -
 // it preempts every thread-mode task (OLED I2C flush, NeoPixel effects, sACN
@@ -85,6 +82,27 @@ unsafe fn SWI_IRQ_1() {
 // Published by cpu_monitor_task, read by oled_task for the on-screen readout.
 // A rough "thread-mode load" percentage, not true CPU usage - see below.
 pub static CPU_STALL_PCT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+// Millis-since-boot (truncated to u32) of the last valid sACN/Art-Net packet, 0 =
+// none yet. The on-board switch keeps the W5500's PHY link up whether or not
+// anything is plugged into the far side, so received data is the only real
+// "connected" signal. Read via `input_active()` for the OLED.
+static LAST_INPUT_RX_MS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// E1.31's "network data loss" timeout: a source that has been silent this long
+/// is considered gone.
+const INPUT_LOSS_TIMEOUT_MS: u32 = 2500;
+
+pub fn mark_input_rx() {
+    let now = embassy_time::Instant::now().as_millis() as u32;
+    LAST_INPUT_RX_MS.store(now.max(1), core::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn input_active() -> bool {
+    let last = LAST_INPUT_RX_MS.load(core::sync::atomic::Ordering::Relaxed);
+    let now = embassy_time::Instant::now().as_millis() as u32;
+    last != 0 && now.wrapping_sub(last) < INPUT_LOSS_TIMEOUT_MS
+}
 
 // Measures whether the *default thread-mode executor* (where neo_task,
 // dmx_task, oled_task, audio_decode_task etc. all run) is being starved, and
@@ -159,8 +177,7 @@ async fn main(spawner: Spawner) {
 
 
     // Spawn Peripherals
-    let ip_state = IP_STATE.init(AsyncMutex::new(None));
-    spawner.spawn(periphs::oled::oled_task(r.oled, ip_state)).unwrap(); // OLED
+    spawner.spawn(periphs::oled::oled_task(r.oled)).unwrap(); // OLED
     spawner.spawn(periphs::dmx::dmx_task(r.dmx)).unwrap(); // DMX
     spawner.spawn(cpu_monitor_task()).unwrap();
 
@@ -176,9 +193,16 @@ async fn main(spawner: Spawner) {
     spawner.spawn(periphs::audio::audio_decode_task(config.audio, r.sd)).unwrap();
 
     if config.input.source == InputProtocol::Artnet || config.input.source == InputProtocol::sACN {
-        let stack = periphs::eth::start_eth(&spawner, r.eth, &config.network, ip_state).await; // Ethernet
+        let stack = periphs::eth::start_eth(&spawner, r.eth).await; // Ethernet
         periphs::sensors::start_sensors(&spawner, r.sensors); // Sensors
-        spawner.spawn(periphs::tcp_cmds::tcp_cmds_task(stack)).unwrap(); // TCP Commands
+        spawner.spawn(periphs::mdns::mdns_task(stack)).unwrap(); // mDNS responder + resolver
+        spawner.spawn(periphs::http::http_task(stack)).unwrap(); // Web status page
+        spawner.spawn(periphs::http::http_task(stack)).unwrap(); // (second listener)
+        spawner.spawn(periphs::tcp_cmds::tcp_cmds_task(
+            stack,
+            config.chataigne.host.clone(),
+            config.chataigne.port,
+        )).unwrap(); // TCP Commands
 
         if config.input.source == InputProtocol::Artnet {
             spawner.spawn(periphs::artnet::artnet_task(stack)).unwrap(); // Art-Net

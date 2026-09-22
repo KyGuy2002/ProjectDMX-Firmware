@@ -236,6 +236,10 @@ pub async fn sacn_task(stack: Stack<'static>) -> ! {
                     continue;
                 };
 
+                // Any valid sACN packet proves a source is reachable, even for a
+                // universe this firmware doesn't use.
+                crate::mark_input_rx();
+
                 if sacn.universe == 0 || sacn.universe > MAX_UNIVERSES {
                     continue;
                 }

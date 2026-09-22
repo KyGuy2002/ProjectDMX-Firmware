@@ -65,6 +65,8 @@ pub async fn artnet_task(stack: Stack<'static>) -> ! {
                     continue;
                 }
 
+                crate::mark_input_rx();
+
                 let sequence = packet[12];
                 // Art-Net wire universes are 0-based, so they're already the
                 // 0-based DMX_MATRIX row index. The config's `universe` field is

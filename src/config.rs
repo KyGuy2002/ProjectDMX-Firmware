@@ -1,5 +1,3 @@
-use core::net::{IpAddr, Ipv4Addr};
-
 use heapless::{String, Vec};
 use serde::{Deserialize, Serialize};
 use serde::de::{self, Deserializer};
@@ -13,6 +11,7 @@ const MAX_CONFIG_LEN: usize = 10240;
 
 pub const MAX_AUDIO_FILES: usize = 10;
 pub const MAX_FILENAME_LEN: usize = 128;
+pub const MAX_HOSTNAME_LEN: usize = 64;
 
 /// Error from parsing or validating a board config document.
 #[derive(Clone, Copy, PartialEq, Debug, defmt::Format)]
@@ -52,10 +51,12 @@ fn validate(config: &BoardInstanceConfig) -> Result<(), ConfigError> {
     // Universes (1..=MAX_UNIVERSES) and channels (1..=512) are 1-based everywhere
     // in the config, matching fixture / console addressing; `read_channels` and
     // the DMX output loop convert to the 0-based matrix index.
-    // Leave room for at least two hosts (this board + the sender); /31 and /32
-    // have no usable host addresses in a normal subnet.
-    if !(1..=30).contains(&config.network.prefix_len) {
-        return Err(ConfigError::Invalid("network prefix_len out of range (expected 1..=30)"));
+    // The board only speaks IPv4 link-local + mDNS, so a hostname can only be
+    // resolved if it's a `.local` name.
+    if config.chataigne.host.parse::<core::net::Ipv4Addr>().is_err()
+        && !config.chataigne.host.trim_end_matches('.').ends_with(".local")
+    {
+        return Err(ConfigError::Invalid("chataigne host must be an IPv4 address or a .local name"));
     }
     if !(1..=MAX_UNIVERSES).contains(&(config.dmx_output.universe as usize)) {
         return Err(ConfigError::Invalid("dmx_output universe out of range (expected 1..=MAX_UNIVERSES)"));
@@ -257,16 +258,6 @@ pub enum InputProtocol {
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub struct InputConfig {
     pub source: InputProtocol,
-}
-
-/// Static IPv4 address for the Ethernet port - there is no DHCP, so the board
-/// works on a bare switch or direct cable with no router. No gateway/DNS: the
-/// controller only talks to devices on its own subnet.
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
-pub struct NetworkConfig {
-    pub ip: Ipv4Addr,
-    /// Subnet size in bits, e.g. 24 for 255.255.255.0.
-    pub prefix_len: u8,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
@@ -516,9 +507,12 @@ pub struct ModuleContainer {
     pub slot_d: ModuleSlot,
 }
 
-#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+/// The Game Master PC (or FPP) the board sends switch events to over TCP.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct Chataigne {
-    pub ip: IpAddr,
+    /// An IPv4 literal ("169.254.3.7") or an mDNS name ("fpp.local"), resolved
+    /// at startup and again on every reconnect.
+    pub host: String<MAX_HOSTNAME_LEN>,
     pub port: u16,
 }
 
@@ -532,7 +526,6 @@ pub struct Chataigne {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct BoardInstanceConfig {
     pub input: InputConfig,
-    pub network: NetworkConfig,
     pub chataigne: Chataigne,
     pub dmx_output: DmxOutputConfig,
     pub audio: AudioConfig,

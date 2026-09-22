@@ -2,12 +2,8 @@
     "input": {
         "source": "sacn"
     },
-    "network": {
-        "ip": "192.168.1.50",
-        "prefix_len": 24
-    },
     "chataigne": {
-        "ip": "192.168.1.29",
+        "host": "fpp.local",
         "port": 6000
     },
     "dmx_output": {

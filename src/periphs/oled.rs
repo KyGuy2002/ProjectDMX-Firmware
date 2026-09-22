@@ -3,11 +3,10 @@ use embassy_rp::i2c::{self, Config};
 use embassy_time::{Duration, Instant, Timer};
 
 use core::sync::atomic::{AtomicBool, Ordering};
-use crate::{hardware::{OledIrqs, OledResources}, periphs::sensors::*};
+use crate::{config::InputProtocol, hardware::{OledIrqs, OledResources}, periphs::sensors::*};
 use core::fmt::Write;
-use embassy_net::Ipv4Address;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::mutex::Mutex as AsyncMutex;
+use crate::periphs::eth::NET_IDENTITY;
+use crate::periphs::tcp_cmds::{ChataigneStatus, chataigne_status};
 
 
 
@@ -25,7 +24,7 @@ use ssd1306::{
 
 
 #[embassy_executor::task]
-pub async fn oled_task(r: OledResources, ip_state: &'static AsyncMutex<CriticalSectionRawMutex, Option<Ipv4Address>>) {
+pub async fn oled_task(r: OledResources) {
     
     let mut config = Config::default();
     // 400kHz made each blocking flush() (~1KB framebuffer) take ~23ms, fully stalling
@@ -70,20 +69,21 @@ pub async fn oled_task(r: OledResources, ip_state: &'static AsyncMutex<CriticalS
 
 
 
-        let current_ip = {
-            let ip = ip_state.lock().await;
-            *ip
-        };
+        // Hostname over IP, each centered (6px glyphs) under the spinner.
+        if let Some(net) = NET_IDENTITY.try_get() {
+            let mut host_text: heapless::String<24> = heapless::String::new();
+            core::write!(&mut host_text, "{}.local", net.hostname).unwrap();
+            let mut ip_text: heapless::String<16> = heapless::String::new();
+            core::write!(&mut ip_text, "{}", net.ip).unwrap();
 
-        if let Some(ip) = current_ip {
-            let mut ip_text: heapless::String<32> = heapless::String::new();
-            core::write!(&mut ip_text, "{}", ip).unwrap();
-
-            Text::new(&ip_text, Point::new(28, 58), text_style)
-                .draw(&mut display)
-                .ok();
+            for (text, baseline) in [(host_text.as_str(), 54), (ip_text.as_str(), 63)] {
+                let x = (128 - 6 * text.len() as i32) / 2;
+                Text::new(text, Point::new(x, baseline), text_style)
+                    .draw(&mut display)
+                    .ok();
+            }
         } else {
-            Text::new("Connecting...", Point::new(28, 58), text_style)
+            Text::new("Starting...", Point::new(34, 58), text_style)
                 .draw(&mut display)
                 .ok();
         }
@@ -103,6 +103,30 @@ pub async fn oled_task(r: OledResources, ip_state: &'static AsyncMutex<CriticalS
         Text::new(&cpu_text, Point::new(0, 20), text_style)
             .draw(&mut display)
             .ok();
+
+        // Network input status. Only meaningful when the board is listening for
+        // sACN/Art-Net; for DMX/SD input there's no network data to wait for.
+        let network_input = crate::CONFIG.try_get().is_some_and(|c| {
+            matches!(c.input.source, InputProtocol::Artnet | InputProtocol::sACN)
+        });
+        if network_input {
+            let label = if crate::input_active() { "DATA OK" } else { "NO DATA" };
+            Text::new(label, Point::new(84, 20), text_style)
+                .draw(&mut display)
+                .ok();
+
+            // Link to Chataigne/FPP, right under it. 7 chars max to fit beside the spinner.
+            let chataigne = match chataigne_status() {
+                ChataigneStatus::Lookup => "LOOKUP",
+                ChataigneStatus::NoHost => "NO HOST",
+                ChataigneStatus::NoConn => "NO CONN",
+                ChataigneStatus::Connected => "TCP OK",
+                ChataigneStatus::Lost => "LOST",
+            };
+            Text::new(chataigne, Point::new(84, 34), text_style)
+                .draw(&mut display)
+                .ok();
+        }
 
         draw_spinner(&mut display, 64, 28, frame);
 

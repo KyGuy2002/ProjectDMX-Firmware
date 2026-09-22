@@ -1,5 +1,7 @@
 use core::convert::Infallible;
 
+use core::fmt::Write;
+
 use defmt::info;
 
 use embassy_executor::Spawner;
@@ -17,11 +19,49 @@ use embedded_hal_async::digital::Wait;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use static_cell::StaticCell;
 use embassy_net::Ipv4Address;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use embassy_sync::mutex::Mutex as AsyncMutex;
+use embassy_sync::once_lock::OnceLock;
+use heapless::String;
 
-use crate::config::NetworkConfig;
 use crate::hardware::{EthResources, EthSpi};
+
+/// Who this board is on the network. Published once the address is applied;
+/// read by the OLED and the mDNS responder.
+pub struct NetIdentity {
+    pub ip: Ipv4Address,
+    /// mDNS host label, e.g. "pdmx-a1b2" (advertised as "pdmx-a1b2.local").
+    pub hostname: String<16>,
+    /// DNS-SD service instance name, e.g. "PDMX Controller A1B2".
+    pub instance: String<24>,
+}
+
+pub static NET_IDENTITY: OnceLock<NetIdentity> = OnceLock::new();
+
+/// The factory-programmed OTP chip ID. A board that can't read it has no unique
+/// identity to build a MAC from, and a shared MAC would collide on the network,
+/// so refuse to boot rather than fall back.
+fn chip_id() -> u64 {
+    match embassy_rp::otp::get_chipid() {
+        Ok(id) => id,
+        Err(_) => defmt::panic!("OTP chip ID unreadable - refusing to boot without a unique MAC"),
+    }
+}
+
+/// Locally administered unicast MAC (02:xx:xx:xx:xx:xx) from the RP2350's
+/// factory-programmed random 64-bit chip ID.
+fn mac_from_chip_id(id: u64) -> [u8; 6] {
+    let b = id.to_be_bytes();
+    [0x02, b[3], b[4], b[5], b[6], b[7]]
+}
+
+/// RFC 3927 link-local address (169.254.1.0 - 169.254.254.255) picked
+/// deterministically from the MAC. There is no ARP probing, so two boards only
+/// clash if their MACs hash to the same address.
+fn link_local_from_mac(mac: &[u8; 6]) -> Ipv4Address {
+    let h = u32::from_be_bytes([0, mac[3], mac[4], mac[5]]);
+    let third = 1 + (h % 254) as u8;
+    let fourth = 1 + ((h / 254) % 254) as u8;
+    Ipv4Address::new(169, 254, third, fourth)
+}
 
 struct FakeInt;
 
@@ -89,8 +129,6 @@ async fn net_task(mut runner: embassy_net::Runner<'static, Device<'static>>) -> 
 pub async fn start_eth(
     spawner: &Spawner,
     r: EthResources,
-    network: &NetworkConfig,
-    ip_state: &'static AsyncMutex<CriticalSectionRawMutex, Option<Ipv4Address>>
 ) -> Stack<'static> {
     info!("Starting W5500 Ethernet");
 
@@ -110,7 +148,9 @@ pub async fn start_eth(
     let cs = Output::new(r.cs, Level::High);
     let spi_device = ExclusiveDevice::new(spi, cs, Delay).unwrap();
 
-    let mac = [0x02, 0x50, 0x44, 0x4D, 0x58, 0x01];
+    let chip_id = chip_id();
+    let mac = mac_from_chip_id(chip_id);
+    let ip = link_local_from_mac(&mac);
 
     static W5500_STATE: StaticCell<State<8, 8>> = StaticCell::new();
 
@@ -126,14 +166,15 @@ pub async fn start_eth(
 
     spawner.spawn(eth_task(eth_runner)).unwrap();
 
-    static NET_RESOURCES: StaticCell<StackResources<4>> = StaticCell::new();
+    static NET_RESOURCES: StaticCell<StackResources<6>> = StaticCell::new();
 
-    let seed = 0x1234_5678_9ABC_DEF0;
+    // Randomizes TCP ephemeral ports / sequence numbers per board.
+    let seed = chip_id;
 
     let (stack, net_runner) = embassy_net::new(
         device,
         Config::ipv4_static(StaticConfigV4 {
-            address: Ipv4Cidr::new(network.ip, network.prefix_len),
+            address: Ipv4Cidr::new(ip, 16),
             gateway: None,
             dns_servers: Default::default(),
         }),
@@ -143,12 +184,17 @@ pub async fn start_eth(
 
     spawner.spawn(net_task(net_runner)).unwrap();
 
-    // Static config is applied immediately, independent of link state, so a
-    // missing cable no longer holds up boot.
+    // Config is applied immediately, independent of link state, so a missing
+    // cable doesn't hold up boot.
     stack.wait_config_up().await;
 
-    info!("Ethernet IP: {}/{}", network.ip, network.prefix_len);
-    *ip_state.lock().await = Some(network.ip);
+    let mut hostname: String<16> = String::new();
+    let mut instance: String<24> = String::new();
+    write!(hostname, "pdmx-{:02x}{:02x}", mac[4], mac[5]).unwrap();
+    write!(instance, "PDMX Controller {:02X}{:02X}", mac[4], mac[5]).unwrap();
+
+    info!("Ethernet: {}.local  {}/16", hostname.as_str(), ip);
+    NET_IDENTITY.init(NetIdentity { ip, hostname, instance }).ok();
 
     stack
 }
