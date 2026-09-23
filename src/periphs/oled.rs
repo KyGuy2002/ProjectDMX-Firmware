@@ -2,8 +2,8 @@ use embassy_rp::i2c::{self, Config};
 
 use embassy_time::{Duration, Instant, Timer};
 
-use core::sync::atomic::{AtomicBool, Ordering};
-use crate::{config::InputProtocol, hardware::{OledIrqs, OledResources}, periphs::sensors::*};
+use core::sync::atomic::Ordering;
+use crate::{hardware::{OledIrqs, OledResources}, periphs::sensors::*};
 use core::fmt::Write;
 use crate::periphs::eth::NET_IDENTITY;
 use crate::periphs::tcp_cmds::{ChataigneStatus, chataigne_status};
@@ -11,9 +11,9 @@ use crate::periphs::tcp_cmds::{ChataigneStatus, chataigne_status};
 
 
 use embedded_graphics::{
-    mono_font::{MonoTextStyle, ascii::FONT_6X10}, pixelcolor::BinaryColor, prelude::*, primitives::Circle, text::Text,
+    mono_font::{MonoTextStyle, ascii::FONT_6X9}, pixelcolor::BinaryColor, prelude::*, primitives::Rectangle, text::Text,
 };
-use embedded_graphics::primitives::{Line, PrimitiveStyle};
+use embedded_graphics::primitives::PrimitiveStyle;
 
 use ssd1306::{
     prelude::*,
@@ -21,11 +21,43 @@ use ssd1306::{
     Ssd1306,
 };
 
+// --- Layout (128x64) ---------------------------------------------------
+// A white status bar along the top, a 6-way button strip low on the screen,
+// and a 1px "alive" slider along the very bottom row. Nothing else is drawn;
+// the middle of the screen is intentionally blank.
+//
+// All top-bar text uses the same baseline: FONT_6X9 is 9px tall with a 6px
+// top-to-baseline offset. 1px of top padding in the 10px bar (0px in the 9px
+// icon box) makes both the bar text and the icon glyphs reach exactly to the
+// bar's last row - as large as the font can go with no margin left to give.
+const TOP_BAR_H: i32 = 10;
+const TOP_TEXT_Y: i32 = 7;
 
+const ICON_SIZE: i32 = 9;
+const ICON_Y: i32 = 1;
+// Right-aligned, D (data) outermost, C (chataigne) just left of it.
+const D_ICON_X: i32 = 128 - 1 - ICON_SIZE;
+const C_ICON_X: i32 = D_ICON_X - 1 - ICON_SIZE;
+
+const RECT_Y: i32 = 56;
+const RECT_H: i32 = 6;
+// 128/6 leaves 2px unused at the right edge - cosmetic, not worth the
+// complexity of distributing the remainder across segments.
+const SEG_W: i32 = 128 / 6;
+
+const SLIDER_Y: i32 = 63;
+const SLIDER_WIDTH: i32 = 20;
+const SLIDER_TRAVEL: i32 = 128 - SLIDER_WIDTH;
+// Pixels per 300ms tick; a full sweep takes SLIDER_TRAVEL / SLIDER_SPEED ticks
+// (108/14 ~ 8 ticks = 2.4s one-way, ~4.6s round trip). Kept under
+// SLIDER_WIDTH (20) on purpose: each step still overlaps the bar's previous
+// position, which is what reads as sliding rather than teeth. Above 20 it
+// would visibly teleport between frames no matter the tick rate.
+const SLIDER_SPEED: i32 = 14;
 
 #[embassy_executor::task]
 pub async fn oled_task(r: OledResources) {
-    
+
     let mut config = Config::default();
     // 400kHz made each blocking flush() (~1KB framebuffer) take ~23ms, fully stalling
     // the cooperative executor (incl. audio playback) each time. Most SSD1306 modules
@@ -57,89 +89,35 @@ pub async fn oled_task(r: OledResources) {
     display.init().unwrap();
     display.clear_buffer();
 
-    let text_style = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
+    // _on = white ink (for text on a filled-black icon); _off = black ink (for
+    // text on the white top bar, and the default elsewhere).
+    let text_off = MonoTextStyle::new(&FONT_6X9, BinaryColor::Off);
+    let text_on = MonoTextStyle::new(&FONT_6X9, BinaryColor::On);
 
-
-    let mut frame: usize = 0;
+    let mut slider_x: i32 = 0;
+    let mut slider_dir: i32 = 1;
 
     loop {
         display.clear_buffer();
 
+        draw_top_bar(&mut display, text_off, text_on);
+        draw_input_rects(&mut display);
 
-
-
-
-        // Hostname over IP, each centered (6px glyphs) under the spinner.
-        if let Some(net) = NET_IDENTITY.try_get() {
-            let mut host_text: heapless::String<24> = heapless::String::new();
-            core::write!(&mut host_text, "{}.local", net.hostname).unwrap();
-            let mut ip_text: heapless::String<16> = heapless::String::new();
-            core::write!(&mut ip_text, "{}", net.ip).unwrap();
-
-            for (text, baseline) in [(host_text.as_str(), 54), (ip_text.as_str(), 63)] {
-                let x = (128 - 6 * text.len() as i32) / 2;
-                Text::new(text, Point::new(x, baseline), text_style)
-                    .draw(&mut display)
-                    .ok();
-            }
-        } else {
-            Text::new("Starting...", Point::new(34, 58), text_style)
-                .draw(&mut display)
-                .ok();
+        slider_x += slider_dir * SLIDER_SPEED;
+        if slider_x >= SLIDER_TRAVEL {
+            slider_x = SLIDER_TRAVEL;
+            slider_dir = -1;
+        } else if slider_x <= 0 {
+            slider_x = 0;
+            slider_dir = 1;
         }
-
-
-
-
-        render_input_state(&mut display);
-
-
-        
-
-
-
-        let mut cpu_text: heapless::String<16> = heapless::String::new();
-        core::write!(&mut cpu_text, "CPU:{}%", crate::CPU_STALL_PCT.load(Ordering::Relaxed)).unwrap();
-        Text::new(&cpu_text, Point::new(0, 20), text_style)
-            .draw(&mut display)
-            .ok();
-
-        // Network input status. Only meaningful when the board is listening for
-        // sACN/Art-Net; for DMX/SD input there's no network data to wait for.
-        let network_input = crate::CONFIG.try_get().is_some_and(|c| {
-            matches!(c.input.source, InputProtocol::Artnet | InputProtocol::sACN)
-        });
-        if network_input {
-            let label = if crate::input_active() { "DATA OK" } else { "NO DATA" };
-            Text::new(label, Point::new(84, 20), text_style)
-                .draw(&mut display)
-                .ok();
-
-            // Link to Chataigne/FPP, right under it. 7 chars max to fit beside the spinner.
-            let chataigne = match chataigne_status() {
-                ChataigneStatus::Lookup => "LOOKUP",
-                ChataigneStatus::NoHost => "NO HOST",
-                ChataigneStatus::NoConn => "NO CONN",
-                ChataigneStatus::Connected => "TCP OK",
-                ChataigneStatus::Lost => "LOST",
-            };
-            Text::new(chataigne, Point::new(84, 34), text_style)
-                .draw(&mut display)
-                .ok();
-        }
-
-        draw_spinner(&mut display, 64, 28, frame);
+        draw_slider(&mut display, slider_x);
 
         let flush_start = Instant::now(); // DIAG: remove after measuring
         display.flush().unwrap();
         let flush_ms = (Instant::now() - flush_start).as_millis(); // DIAG
         if flush_ms > 3 {
-            defmt::println!("DIAG oled flush: {}ms", flush_ms);
-        }
-
-        frame += 1;
-        if frame >= 12 {
-            frame = 0;
+            // defmt::println!("DIAG oled flush: {}ms", flush_ms);
         }
 
         // Was 90ms; the ~12ms blocking I2C flush every cycle was a continuous
@@ -153,104 +131,103 @@ pub async fn oled_task(r: OledResources) {
 }
 
 
-fn draw_spinner<D>(display: &mut D, cx: i32, cy: i32, frame: usize)
+/// White bar across the top: hostname (left), CPU% and the C/D icons (right).
+fn draw_top_bar<D>(display: &mut D, text_off: MonoTextStyle<BinaryColor>, text_on: MonoTextStyle<BinaryColor>)
 where
     D: DrawTarget<Color = BinaryColor>,
 {
-    // 12-point circle lookup table.
-    // Values are roughly sin/cos scaled to radius 16.
-    let points: [(i32, i32); 12] = [
-        (0, -16),
-        (8, -14),
-        (14, -8),
-        (16, 0),
-        (14, 8),
-        (8, 14),
-        (0, 16),
-        (-8, 14),
-        (-14, 8),
-        (-16, 0),
-        (-14, -8),
-        (-8, -14),
-    ];
+    Rectangle::new(Point::new(0, 0), Size::new(128, TOP_BAR_H as u32))
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+        .draw(display)
+        .ok();
 
-    // Smaller inner radius for each segment.
-    let inner_points: [(i32, i32); 12] = [
-        (0, -8),
-        (4, -7),
-        (7, -4),
-        (8, 0),
-        (7, 4),
-        (4, 7),
-        (0, 8),
-        (-4, 7),
-        (-7, 4),
-        (-8, 0),
-        (-7, -4),
-        (-4, -7),
-    ];
-
-    for i in 0..12 {
-        let age = (12 + frame as i32 - i as i32) % 12;
-
-        // Only draw the most recent 8 ticks.
-        // This creates the fading-tail look on a monochrome display.
-        if age >= 8 {
-            continue;
+    let mut host: heapless::String<24> = heapless::String::new();
+    match NET_IDENTITY.try_get() {
+        Some(net) => {
+            let _ = write!(&mut host, "{}", net.hostname);
         }
+        // No eth means the board's input source isn't Art-Net/sACN (eth is
+        // only started for those) or the address hasn't been assigned yet.
+        None => {
+            let _ = host.push_str("no eth");
+        }
+    }
+    Text::new(&host, Point::new(0, TOP_TEXT_Y), text_off).draw(display).ok();
 
-        let outer = points[i];
-        let inner = inner_points[i];
+    let mut cpu: heapless::String<8> = heapless::String::new();
+    let _ = write!(&mut cpu, "{}%", crate::CPU_STALL_PCT.load(Ordering::Relaxed));
+    let cpu_w = 6 * cpu.len() as i32;
+    Text::new(&cpu, Point::new(C_ICON_X - cpu_w, TOP_TEXT_Y), text_off).draw(display).ok();
 
-        let style = if age == 0 {
-            PrimitiveStyle::with_stroke(BinaryColor::On, 3)
-        } else if age <= 2 {
-            PrimitiveStyle::with_stroke(BinaryColor::On, 2)
+    let chataigne_ok = chataigne_status() == ChataigneStatus::Connected;
+    draw_icon(display, C_ICON_X, 'C', chataigne_ok, text_off, text_on);
+
+    // Data-received indicator; covers whichever of Art-Net/sACN is enabled.
+    // Stays outlined (never lit) when the board isn't listening for network
+    // input at all, which is the correct "not applicable" reading.
+    draw_icon(display, D_ICON_X, 'D', crate::input_active(), text_off, text_on);
+}
+
+/// One status icon: a 9x9 box, filled black with a white letter when `good`,
+/// or just an outline with a black letter when not.
+fn draw_icon<D>(display: &mut D, x: i32, ch: char, good: bool, text_off: MonoTextStyle<BinaryColor>, text_on: MonoTextStyle<BinaryColor>)
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    let (box_style, letter_style) = if good {
+        (PrimitiveStyle::with_fill(BinaryColor::Off), text_on)
+    } else {
+        (PrimitiveStyle::with_stroke(BinaryColor::Off, 1), text_off)
+    };
+
+    Rectangle::new(Point::new(x, ICON_Y), Size::new(ICON_SIZE as u32, ICON_SIZE as u32))
+        .into_styled(box_style)
+        .draw(display)
+        .ok();
+
+    let mut s: heapless::String<1> = heapless::String::new();
+    let _ = s.push(ch);
+    Text::new(&s, Point::new(x + 1, TOP_TEXT_Y), letter_style).draw(display).ok();
+}
+
+/// A 1px bar sliding back and forth along the bottom row, so a glance confirms
+/// the render loop (and thus the thread-mode executor) hasn't stalled.
+fn draw_slider<D>(display: &mut D, x: i32)
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    Rectangle::new(Point::new(x, SLIDER_Y), Size::new(SLIDER_WIDTH as u32, 1))
+        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+        .draw(display)
+        .ok();
+}
+
+/// The 6 button states as rectangles spanning the full width, right above the
+/// slider. Each segment leaves its rightmost column blank, which is what
+/// forms the 1px divider between segments (and before the slider).
+fn draw_input_rects<D>(display: &mut D)
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    let buttons = [
+        &BUTTON_1_STATUS, &BUTTON_2_STATUS, &BUTTON_3_STATUS,
+        &BUTTON_4_STATUS, &BUTTON_5_STATUS, &BUTTON_6_STATUS,
+    ];
+
+    for (i, button) in buttons.iter().enumerate() {
+        let x0 = i as i32 * SEG_W;
+        let w = SEG_W - 1;
+        let pressed = button.load(Ordering::Relaxed);
+
+        let style = if pressed {
+            PrimitiveStyle::with_fill(BinaryColor::On)
         } else {
             PrimitiveStyle::with_stroke(BinaryColor::On, 1)
         };
 
-        Line::new(
-            Point::new(cx + inner.0, cy + inner.1),
-            Point::new(cx + outer.0, cy + outer.1),
-        )
-        .into_styled(style)
-        .draw(display)
-        .ok();
-    }
-}
-
-
-fn render_input_state<D>(display: &mut D)
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
-    render_in(display, &BUTTON_1_STATUS, 1);
-    render_in(display, &BUTTON_2_STATUS, 2);
-    render_in(display, &BUTTON_3_STATUS, 3);
-    render_in(display, &BUTTON_4_STATUS, 4);
-    render_in(display, &BUTTON_5_STATUS, 5);
-    render_in(display, &BUTTON_6_STATUS, 6);
-
-        
-}
-
-fn render_in<D>(display: &mut D, var: &'static AtomicBool, no: i32)
-where
-    D: DrawTarget<Color = BinaryColor>,
-{
-
-    let pressed = var.load(Ordering::Relaxed);
-    if !pressed {
-        Circle::new(Point::new((128/10) * (no - 1), 0), 10)
-            .into_styled(PrimitiveStyle::with_stroke(BinaryColor::On, 1))
-            .draw(display)
-            .ok();
-    } else {
-        Circle::new(Point::new((128/10) * (no - 1), 0), 10)
-            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+        Rectangle::new(Point::new(x0, RECT_Y), Size::new(w as u32, RECT_H as u32))
+            .into_styled(style)
             .draw(display)
             .ok();
     }
-
 }

@@ -50,13 +50,16 @@ pub async fn tcp_cmds_task(stack: Stack<'static>, host: heapless::String<MAX_HOS
     let mut rx_buffer = [0; 1024];
     let mut tx_buffer = [0; 1024];
 
-    // Keeps track of the last state we successfully confirmed over the network
-    let mut last_sent_status_1 = BUTTON_1_STATUS.load(Ordering::Relaxed);
-    let mut last_sent_status_2 = BUTTON_2_STATUS.load(Ordering::Relaxed);
-    let mut last_sent_status_3 = BUTTON_3_STATUS.load(Ordering::Relaxed);
-    let mut last_sent_status_4 = BUTTON_4_STATUS.load(Ordering::Relaxed);
-    let mut last_sent_status_5 = BUTTON_5_STATUS.load(Ordering::Relaxed);
-    let mut last_sent_status_6 = BUTTON_6_STATUS.load(Ordering::Relaxed);
+    // Keeps track of the last state we successfully confirmed over the network.
+    // Declared here so it survives across the inner (per-connection) loop's
+    // iterations; reset to false on every (re)connect, right after telling
+    // Chataigne all channels are low.
+    let mut last_sent_status_1;
+    let mut last_sent_status_2;
+    let mut last_sent_status_3;
+    let mut last_sent_status_4;
+    let mut last_sent_status_5;
+    let mut last_sent_status_6;
 
     // Resolve + connect forever. The name is looked up again on every attempt so
     // a peer that came back with a different link-local address is found.
@@ -102,6 +105,30 @@ pub async fn tcp_cmds_task(stack: Stack<'static>, host: heapless::String<MAX_HOS
         info!("Connected safely! Awaiting switch updates...");
         set_status(ChataigneStatus::Connected);
 
+        // Tell Chataigne every channel starts low, regardless of current button
+        // state. Any button already held down will then pulse on the first poll.
+        let init_sent = async {
+            for no in 1..=6 {
+                write_switch(&mut socket, no, 0).await?;
+            }
+            Ok::<(), ()>(())
+        }
+        .await;
+
+        if init_sent.is_err() {
+            socket.abort();
+            set_status(ChataigneStatus::Lost);
+            Timer::after(RETRY_DELAY).await;
+            continue;
+        }
+
+        last_sent_status_1 = false;
+        last_sent_status_2 = false;
+        last_sent_status_3 = false;
+        last_sent_status_4 = false;
+        last_sent_status_5 = false;
+        last_sent_status_6 = false;
+
         // Runs until the connection is gone, then falls through to re-resolve.
         loop {
             // Peer closed (FIN -> CloseWait), reset, or keep-alive timed out.
@@ -143,25 +170,39 @@ pub async fn tcp_cmds_task(stack: Stack<'static>, host: heapless::String<MAX_HOS
 }
 
 
+const PRESS_PULSE_WIDTH: Duration = Duration::from_millis(100);
+
 /// `Err` if the write failed (the connection is dead); otherwise the state to remember as last sent.
+///
+/// `var` stores `true` while the button is held (input is low). We only care about
+/// the moment it goes low: on that edge we pulse 1 then 0, so Chataigne sees a brief
+/// "pressed" blip rather than a level that stays high. The release edge (low -> high)
+/// is not reported.
 async fn send_sensor_status(socket: &mut TcpSocket<'_>, var: &'static AtomicBool, no: i32, last_sent_status: bool) -> Result<bool, ()> {
     // Read the current atomic state updated by your hardware interrupts/GPIO
     let current_status = var.load(Ordering::Relaxed);
 
-    // Edge detection: only act if the state changed
-    if current_status != last_sent_status {
-        let mut message: heapless::String<32> = heapless::String::new();
-        write!(&mut message, "SWITCH_{}:{}\n", no, current_status as u8).unwrap();
-
-        // Send over TCP (W5500 handles buffering and physical packet retries)
-        if let Err(e) = socket.write(message.as_bytes()).await {
-            warn!("TCP Write Failed: {:?}. Forcing reconnection...", e);
-            return Err(());
-        }
-
-        // info!("Sent to Chataigne: {}", message.trim_end());
-        return Ok(current_status);
+    // Edge detection: only pulse on the high -> low (button pressed) transition
+    if current_status && !last_sent_status {
+        write_switch(socket, no, 1).await?;
+        Timer::after(PRESS_PULSE_WIDTH).await;
+        write_switch(socket, no, 0).await?;
     }
 
-    Ok(last_sent_status)
+    Ok(current_status)
+}
+
+/// Sends `SWITCH_<no>:<value>\n`. `Err` if the write failed (the connection is dead).
+async fn write_switch(socket: &mut TcpSocket<'_>, no: i32, value: u8) -> Result<(), ()> {
+    let mut message: heapless::String<32> = heapless::String::new();
+    write!(&mut message, "SWITCH_{}:{}\n", no, value).unwrap();
+
+    // Send over TCP (W5500 handles buffering and physical packet retries)
+    if let Err(e) = socket.write(message.as_bytes()).await {
+        warn!("TCP Write Failed: {:?}. Forcing reconnection...", e);
+        return Err(());
+    }
+
+    // info!("Sent to Chataigne: {}", message.trim_end());
+    Ok(())
 }

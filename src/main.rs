@@ -131,7 +131,7 @@ async fn cpu_monitor_task() {
             overrun_ms += elapsed - EXPECTED_MS;
         }
         if elapsed > EXPECTED_MS * 2 {
-            warn!("DIAG thread-mode stall: {}ms (wanted {}ms)", elapsed, EXPECTED_MS);
+            // warn!("DIAG thread-mode stall: {}ms (wanted {}ms)", elapsed, EXPECTED_MS);
         }
         last = now;
 

@@ -190,8 +190,10 @@ pub async fn start_eth(
 
     let mut hostname: String<16> = String::new();
     let mut instance: String<24> = String::new();
-    write!(hostname, "pdmx-{:02x}{:02x}", mac[4], mac[5]).unwrap();
-    write!(instance, "PDMX Controller {:02X}{:02X}", mac[4], mac[5]).unwrap();
+    // All caps: DNS names are case-insensitive (the mDNS code compares with
+    // eq_ignore_ascii_case throughout), so this is purely how it's displayed.
+    write!(hostname, "PDMX-{:02X}{:02X}", mac[4], mac[5]).unwrap();
+    write!(instance, "PDMX CONTROLLER {:02X}{:02X}", mac[4], mac[5]).unwrap();
 
     info!("Ethernet: {}.local  {}/16", hostname.as_str(), ip);
     NET_IDENTITY.init(NetIdentity { ip, hostname, instance }).ok();
