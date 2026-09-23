@@ -20,7 +20,7 @@ use crate::config::InputProtocol;
 use crate::periphs::eth::{NET_IDENTITY, NetIdentity};
 use crate::periphs::mdns;
 use crate::periphs::sensors::*;
-use crate::periphs::tcp_cmds::{ChataigneStatus, chataigne_status};
+use crate::periphs::fpp::{FppStatus, fpp_status};
 
 /// Also the port advertised over mDNS.
 pub const HTTP_PORT: u16 = 80;
@@ -51,7 +51,7 @@ function off(){let d=Date.now()-last,o=d>2000;
 m.style.opacity=o?.35:1;e.textContent=o?'OFFLINE - no response for '+Math.floor(d/1000)+'s':''}
 async function t(){let ctl=new AbortController(),to=setTimeout(()=>ctl.abort(),1500);try{
 let s=await(await fetch('/status',{cache:'no-store',signal:ctl.signal})).json();
-u.textContent=s.up;i.textContent=s.input;c.textContent=s.chataigne;
+u.textContent=s.up;i.textContent=s.input;g.textContent=s.state;c.textContent=s.fppcmd;
 b.textContent=s.buttons.map((x,n)=>(n+1)+(x?'●':'○')).join('  ');
 if(s.fpp)f.replaceChildren(A(s.fpp,'online ('+s.fpp+')'));else f.textContent='offline';
 l.replaceChildren(...s.peers.map(q=>{let li=document.createElement('li');li.append(q.n+' - ');
@@ -154,7 +154,8 @@ fn write_page(out: &mut Response, ident: &NetIdentity) -> fmt::Result {
          <p>{host}.local &middot; {ip}</p>\
          <p>Uptime: <span id=u></span>s</p>\
          <p>Input: <span id=i></span></p>\
-         <p>Chataigne: <span id=c></span></p>\
+         <p>Show state: <span id=g></span></p>\
+         <p>FPP commands: <span id=c></span></p>\
          <p>Buttons: <span id=b style=\"white-space:pre\"></span></p>\
          <p>FPP ({fpp}): <span id=f></span></p>\
          <h3>Other controllers</h3><ul id=l></ul></div>",
@@ -180,17 +181,13 @@ fn write_status(out: &mut Response) -> fmt::Result {
         Some(InputProtocol::Artnet | InputProtocol::sACN) => ", no data",
         _ => "",
     };
-    let chataigne = match chataigne_status() {
-        ChataigneStatus::Lookup => "looking up host",
-        ChataigneStatus::NoHost => "host not found",
-        ChataigneStatus::NoConn => "cannot connect",
-        ChataigneStatus::Connected => "connected",
-        ChataigneStatus::Lost => "connection lost",
+    let fpp_cmd = match fpp_status() {
+        FppStatus::Idle => "none sent yet",
+        FppStatus::NoHost => "host not found, retrying",
+        FppStatus::NoConn => "cannot connect, retrying",
+        FppStatus::Online => "ok",
+        FppStatus::Rejected => "last command rejected",
     };
-    let buttons = [
-        &BUTTON_1_STATUS, &BUTTON_2_STATUS, &BUTTON_3_STATUS,
-        &BUTTON_4_STATUS, &BUTTON_5_STATUS, &BUTTON_6_STATUS,
-    ];
 
     push(
         out,
@@ -198,15 +195,20 @@ fn write_status(out: &mut Response) -> fmt::Result {
     )?;
     write!(
         out,
-        "{{\"up\":{},\"input\":\"{}{}\",\"chataigne\":\"{}\",\"buttons\":[",
+        "{{\"up\":{},\"input\":\"{}{}\",\"fppcmd\":\"{}\",\"state\":\"",
         Instant::now().as_secs(),
         input,
         data,
-        chataigne,
+        fpp_cmd,
     )?;
-    for (n, button) in buttons.iter().enumerate() {
-        let sep = if n == 0 { "" } else { "," };
-        write!(out, "{}{}", sep, button.load(core::sync::atomic::Ordering::Relaxed))?;
+    match logic_state() {
+        Some(state) => write!(out, "{:?}", state)?,
+        None => push(out, "starting")?,
+    }
+    push(out, "\",\"buttons\":[")?;
+    for n in 1..=6 {
+        let sep = if n == 1 { "" } else { "," };
+        write!(out, "{}{}", sep, button_active(n))?;
     }
 
     push(out, "],\"fpp\":")?;

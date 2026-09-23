@@ -53,10 +53,10 @@ fn validate(config: &BoardInstanceConfig) -> Result<(), ConfigError> {
     // the DMX output loop convert to the 0-based matrix index.
     // The board only speaks IPv4 link-local + mDNS, so a hostname can only be
     // resolved if it's a `.local` name.
-    if config.chataigne.host.parse::<core::net::Ipv4Addr>().is_err()
-        && !config.chataigne.host.trim_end_matches('.').ends_with(".local")
+    if config.fpp.host.parse::<core::net::Ipv4Addr>().is_err()
+        && !config.fpp.host.trim_end_matches('.').ends_with(".local")
     {
-        return Err(ConfigError::Invalid("chataigne host must be an IPv4 address or a .local name"));
+        return Err(ConfigError::Invalid("fpp host must be an IPv4 address or a .local name"));
     }
     if !(1..=MAX_UNIVERSES).contains(&(config.dmx_output.universe as usize)) {
         return Err(ConfigError::Invalid("dmx_output universe out of range (expected 1..=MAX_UNIVERSES)"));
@@ -507,13 +507,19 @@ pub struct ModuleContainer {
     pub slot_d: ModuleSlot,
 }
 
-/// The Game Master PC (or FPP) the board sends switch events to over TCP.
+/// Falcon Player, driven over its HTTP API by the show logic (logic.rs).
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
-pub struct Chataigne {
+pub struct FppConfig {
     /// An IPv4 literal ("169.254.3.7") or an mDNS name ("fpp.local"), resolved
-    /// at startup and again on every reconnect.
+    /// before the first command and again after any connection failure.
     pub host: String<MAX_HOSTNAME_LEN>,
-    pub port: u16,
+}
+
+/// One of the 6 button/sensor inputs.
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+pub struct ButtonConfig {
+    /// `false`: pulled LOW = triggered. `true`: HIGH = triggered.
+    pub reversed: bool,
 }
 
 // =========================================================================
@@ -526,7 +532,8 @@ pub struct Chataigne {
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct BoardInstanceConfig {
     pub input: InputConfig,
-    pub chataigne: Chataigne,
+    pub fpp: FppConfig,
+    pub buttons: [ButtonConfig; 6],
     pub dmx_output: DmxOutputConfig,
     pub audio: AudioConfig,
     pub modules: ModuleContainer,

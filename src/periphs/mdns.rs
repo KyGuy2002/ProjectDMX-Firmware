@@ -2,7 +2,7 @@
 //!
 //! - Responder: advertises "<hostname>.local" (A record) and a `_pdmx._tcp`
 //!   service named "PDMX Controller XXXX" pointing at the future web interface.
-//! - Resolver: `resolve("fpp.local")` for the TCP command task.
+//! - Resolver: `resolve("fpp.local")` for the FPP command task.
 //!
 //! Both share one socket on purpose. smoltcp hands each datagram to a single
 //! socket per port, so a second socket on 5353 would never see the replies to

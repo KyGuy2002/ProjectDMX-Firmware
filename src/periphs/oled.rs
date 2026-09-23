@@ -6,12 +6,13 @@ use core::sync::atomic::Ordering;
 use crate::{hardware::{OledIrqs, OledResources}, periphs::sensors::*};
 use core::fmt::Write;
 use crate::periphs::eth::NET_IDENTITY;
-use crate::periphs::tcp_cmds::{ChataigneStatus, chataigne_status};
+use crate::periphs::fpp::{FppStatus, fpp_status};
 
 
 
 use embedded_graphics::{
-    mono_font::{MonoTextStyle, ascii::FONT_6X9}, pixelcolor::BinaryColor, prelude::*, primitives::Rectangle, text::Text,
+    mono_font::{MonoTextStyle, ascii::{FONT_6X9, FONT_10X20}}, pixelcolor::BinaryColor, prelude::*, primitives::Rectangle,
+    text::{Alignment, Baseline, Text, TextStyleBuilder},
 };
 use embedded_graphics::primitives::PrimitiveStyle;
 
@@ -22,9 +23,9 @@ use ssd1306::{
 };
 
 // --- Layout (128x64) ---------------------------------------------------
-// A white status bar along the top, a 6-way button strip low on the screen,
-// and a 1px "alive" slider along the very bottom row. Nothing else is drawn;
-// the middle of the screen is intentionally blank.
+// A white status bar along the top, the show-logic state centered in the
+// middle, a 6-way button strip low on the screen, and a 1px "alive" slider
+// along the very bottom row.
 //
 // All top-bar text uses the same baseline: FONT_6X9 is 9px tall with a 6px
 // top-to-baseline offset. 1px of top padding in the 10px bar (0px in the 9px
@@ -35,11 +36,13 @@ const TOP_TEXT_Y: i32 = 7;
 
 const ICON_SIZE: i32 = 9;
 const ICON_Y: i32 = 1;
-// Right-aligned, D (data) outermost, C (chataigne) just left of it.
+// Right-aligned, D (data) outermost, F (FPP) just left of it.
 const D_ICON_X: i32 = 128 - 1 - ICON_SIZE;
-const C_ICON_X: i32 = D_ICON_X - 1 - ICON_SIZE;
+const F_ICON_X: i32 = D_ICON_X - 1 - ICON_SIZE;
 
 const RECT_Y: i32 = 56;
+// Halfway between the top bar and the button strip.
+const STATE_Y: i32 = (TOP_BAR_H + RECT_Y) / 2;
 const RECT_H: i32 = 6;
 // 128/6 leaves 2px unused at the right edge - cosmetic, not worth the
 // complexity of distributing the remainder across segments.
@@ -101,6 +104,7 @@ pub async fn oled_task(r: OledResources) {
         display.clear_buffer();
 
         draw_top_bar(&mut display, text_off, text_on);
+        draw_state(&mut display);
         draw_input_rects(&mut display);
 
         slider_x += slider_dir * SLIDER_SPEED;
@@ -131,7 +135,7 @@ pub async fn oled_task(r: OledResources) {
 }
 
 
-/// White bar across the top: hostname (left), CPU% and the C/D icons (right).
+/// White bar across the top: hostname (left), CPU% and the F/D icons (right).
 fn draw_top_bar<D>(display: &mut D, text_off: MonoTextStyle<BinaryColor>, text_on: MonoTextStyle<BinaryColor>)
 where
     D: DrawTarget<Color = BinaryColor>,
@@ -157,10 +161,10 @@ where
     let mut cpu: heapless::String<8> = heapless::String::new();
     let _ = write!(&mut cpu, "{}%", crate::CPU_STALL_PCT.load(Ordering::Relaxed));
     let cpu_w = 6 * cpu.len() as i32;
-    Text::new(&cpu, Point::new(C_ICON_X - cpu_w, TOP_TEXT_Y), text_off).draw(display).ok();
+    Text::new(&cpu, Point::new(F_ICON_X - cpu_w, TOP_TEXT_Y), text_off).draw(display).ok();
 
-    let chataigne_ok = chataigne_status() == ChataigneStatus::Connected;
-    draw_icon(display, C_ICON_X, 'C', chataigne_ok, text_off, text_on);
+    let fpp_ok = fpp_status() == FppStatus::Online;
+    draw_icon(display, F_ICON_X, 'F', fpp_ok, text_off, text_on);
 
     // Data-received indicator; covers whichever of Art-Net/sACN is enabled.
     // Stays outlined (never lit) when the board isn't listening for network
@@ -190,6 +194,29 @@ where
     Text::new(&s, Point::new(x + 1, TOP_TEXT_Y), letter_style).draw(display).ok();
 }
 
+/// The show-logic state (logic.rs), large and centered, e.g. "OVERLOAD".
+/// FONT_10X20 fits 12 characters across; longer names are clipped.
+fn draw_state<D>(display: &mut D)
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    let mut name: heapless::String<16> = heapless::String::new();
+    match logic_state() {
+        Some(state) => {
+            let _ = write!(&mut name, "{:?}", state);
+            name.make_ascii_uppercase();
+        }
+        None => {
+            let _ = name.push_str("...");
+        }
+    }
+
+    let style = TextStyleBuilder::new().alignment(Alignment::Center).baseline(Baseline::Middle).build();
+    Text::with_text_style(&name, Point::new(64, STATE_Y), MonoTextStyle::new(&FONT_10X20, BinaryColor::On), style)
+        .draw(display)
+        .ok();
+}
+
 /// A 1px bar sliding back and forth along the bottom row, so a glance confirms
 /// the render loop (and thus the thread-mode executor) hasn't stalled.
 fn draw_slider<D>(display: &mut D, x: i32)
@@ -202,24 +229,20 @@ where
         .ok();
 }
 
-/// The 6 button states as rectangles spanning the full width, right above the
-/// slider. Each segment leaves its rightmost column blank, which is what
-/// forms the 1px divider between segments (and before the slider).
+/// The 6 inputs as rectangles spanning the full width, right above the slider:
+/// filled while triggered (wired OR remote), outlined otherwise. Each segment
+/// leaves its rightmost column blank, which is what forms the 1px divider
+/// between segments (and before the slider).
 fn draw_input_rects<D>(display: &mut D)
 where
     D: DrawTarget<Color = BinaryColor>,
 {
-    let buttons = [
-        &BUTTON_1_STATUS, &BUTTON_2_STATUS, &BUTTON_3_STATUS,
-        &BUTTON_4_STATUS, &BUTTON_5_STATUS, &BUTTON_6_STATUS,
-    ];
-
-    for (i, button) in buttons.iter().enumerate() {
+    for i in 0..6 {
         let x0 = i as i32 * SEG_W;
         let w = SEG_W - 1;
-        let pressed = button.load(Ordering::Relaxed);
+        let triggered = button_active(i as u8 + 1);
 
-        let style = if pressed {
+        let style = if triggered {
             PrimitiveStyle::with_fill(BinaryColor::On)
         } else {
             PrimitiveStyle::with_stroke(BinaryColor::On, 1)

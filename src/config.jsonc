@@ -2,10 +2,19 @@
     "input": {
         "source": "sacn"
     },
-    "chataigne": {
-        "host": "fpp.local",
-        "port": 6000
+    "fpp": {
+        "host": "fpp.local"
     },
+    // Inputs 1..=6. reversed = false: pulled LOW = triggered (HIGH = idle);
+    // true: HIGH = triggered.
+    "buttons": [
+        { "reversed": true },
+        { "reversed": true },
+        { "reversed": true },
+        { "reversed": false },
+        { "reversed": false },
+        { "reversed": false }
+    ],
     "dmx_output": {
         "universe": 1
     },

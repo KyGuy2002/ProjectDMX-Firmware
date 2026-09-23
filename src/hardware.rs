@@ -40,6 +40,10 @@ assign_resources! {
         in5: PIN_45,
         in6: PIN_47,
     },
+    remote: RemoteResources {
+        data: PIN_28, // 433 MHz receiver data out
+        pio: PIO2,
+    },
     audio: AudioResources {
         // NOTE: LCK/WS MUST BE BCK+1 (one more than BCK) [lck > bck]
         din: PIN_20,
@@ -105,6 +109,10 @@ bind_interrupts!(pub struct NeoIrqs {
 
 bind_interrupts!(pub struct AudioIrqs {
     PIO1_IRQ_0 => PioInterruptHandler<peripherals::PIO1>;
+});
+
+bind_interrupts!(pub struct RemoteIrqs {
+    PIO2_IRQ_0 => PioInterruptHandler<peripherals::PIO2>;
 });
 
 bind_interrupts!(pub struct OledIrqs {

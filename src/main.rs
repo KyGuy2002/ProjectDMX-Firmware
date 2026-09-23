@@ -7,6 +7,7 @@ use panic_probe as _;
 
 mod config;
 mod hardware;
+mod logic;
 mod modules;
 mod pixel_mapping_config;
 
@@ -19,7 +20,8 @@ mod periphs {
     pub mod sacn;
     pub mod oled;
     pub mod sensors;
-    pub mod tcp_cmds;
+    pub mod fpp;
+    pub mod ask433;
     pub mod sd;
     pub mod audio;
 }
@@ -77,6 +79,21 @@ static AUDIO_EXECUTOR: InterruptExecutor = InterruptExecutor::new();
 #[interrupt]
 unsafe fn SWI_IRQ_1() {
     unsafe { AUDIO_EXECUTOR.on_interrupt() };
+}
+
+// The 433 MHz remote decoder (ask433_task). Its PIO pushes every pulse width
+// into an 8-deep RX FIFO with `push noblock`, so a thread-mode stall of a few
+// ms (OLED flush, neo effects, MP3 decode) overflowed it and silently dropped
+// pulses mid-frame - only ~10% of presses decoded. Here it preempts thread
+// mode. P3 is the lowest priority available (same as the audio feed), so the
+// two never preempt each other, only take turns; a wake here is a few
+// microseconds (tens when it logs a frame), well inside the audio FIFO's
+// ~180us of slack.
+static RF_EXECUTOR: InterruptExecutor = InterruptExecutor::new();
+
+#[interrupt]
+unsafe fn SWI_IRQ_2() {
+    unsafe { RF_EXECUTOR.on_interrupt() };
 }
 
 // Published by cpu_monitor_task, read by oled_task for the on-screen readout.
@@ -194,15 +211,14 @@ async fn main(spawner: Spawner) {
 
     if config.input.source == InputProtocol::Artnet || config.input.source == InputProtocol::sACN {
         let stack = periphs::eth::start_eth(&spawner, r.eth).await; // Ethernet
-        periphs::sensors::start_sensors(&spawner, r.sensors); // Sensors
+        spawner.spawn(periphs::fpp::fpp_task(stack, config.fpp.host.clone())).unwrap(); // FPP commands
+        periphs::sensors::start_sensors(&spawner, r.sensors, config.buttons); // Sensors + show logic
+        interrupt::SWI_IRQ_2.set_priority(Priority::P3);
+        let rf_spawner = RF_EXECUTOR.start(interrupt::SWI_IRQ_2);
+        rf_spawner.spawn(periphs::ask433::ask433_task(r.remote)).unwrap(); // 433 MHz remote -> inputs 1-4
         spawner.spawn(periphs::mdns::mdns_task(stack)).unwrap(); // mDNS responder + resolver
         spawner.spawn(periphs::http::http_task(stack)).unwrap(); // Web status page
         spawner.spawn(periphs::http::http_task(stack)).unwrap(); // (second listener)
-        spawner.spawn(periphs::tcp_cmds::tcp_cmds_task(
-            stack,
-            config.chataigne.host.clone(),
-            config.chataigne.port,
-        )).unwrap(); // TCP Commands
 
         if config.input.source == InputProtocol::Artnet {
             spawner.spawn(periphs::artnet::artnet_task(stack)).unwrap(); // Art-Net
