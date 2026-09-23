@@ -146,7 +146,7 @@ pub async fn read_yielding(
     // that this read held the AUDIO_EXECUTOR interrupt busy for.
     let elapsed_ms = (Instant::now() - start).as_millis();
     if elapsed_ms > 1 {
-        println!("DIAG read_yielding: {} bytes in {}ms", total_read, elapsed_ms);
+        // println!("DIAG read_yielding: {} bytes in {}ms", total_read, elapsed_ms);
     }
 
     Ok(total_read)
