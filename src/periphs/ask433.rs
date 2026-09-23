@@ -32,6 +32,11 @@ const REMOTE_BUTTONS: &[RemoteButton] = &[
     RemoteButton { address: 0x3fcad, data: 0x4, input: 2 }, // B
     RemoteButton { address: 0x3fcad, data: 0x2, input: 3 }, // C
     RemoteButton { address: 0x3fcad, data: 0x1, input: 4 }, // D
+
+    RemoteButton { address: 0xc136d, data: 0x8, input: 1 }, // A
+    RemoteButton { address: 0xc136d, data: 0x4, input: 2 }, // B
+    RemoteButton { address: 0xc136d, data: 0x2, input: 3 }, // C
+    RemoteButton { address: 0xc136d, data: 0x1, input: 4 }, // D
 ];
 
 // Cheap superheterodyne receivers have no squelch, so the DATA pin is never
