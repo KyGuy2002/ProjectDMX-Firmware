@@ -154,11 +154,9 @@ fn handle_frame(last: &mut Option<(u32, Instant)>, code: u32) {
     let data = (code & 0xF) as u8;
 
     let Some(button) = REMOTE_BUTTONS.iter().find(|b| b.address == address && b.data == data) else {
-        // Garbled reads of a known fob are dropped quietly-ish; anything else
-        // is logged raw so new fobs can be learned.
-        if REMOTE_BUTTONS.iter().any(|b| b.address == address) {
-            info!("ask433 remote 0x{:05x}: unrecognized data=0x{:x}", address, data);
-        } else {
+        // Data values from a known fob that aren't mapped (it sends 0x0 a lot)
+        // are ignored silently; unknown fobs are logged so they can be learned.
+        if !REMOTE_BUTTONS.iter().any(|b| b.address == address) {
             info!("ask433 unknown remote: address=0x{:05x} data=0x{:x}", address, data);
         }
         return;

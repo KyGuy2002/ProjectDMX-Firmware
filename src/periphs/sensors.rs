@@ -97,10 +97,9 @@ pub fn press_later(button: u8, delay: Duration) {
 }
 
 
-/// Temporarily off: the wired inputs aren't read at all (they stay "not
-/// triggered"), so only the remote drives the logic. Set back to `true` to
-/// re-enable them.
-const WIRED_INPUTS_ENABLED: bool = false;
+/// `false` stops the wired inputs being read at all (they stay "not
+/// triggered"), so only the remote drives the logic.
+const WIRED_INPUTS_ENABLED: bool = true;
 
 pub fn start_sensors(spawner: &Spawner, r: SensorResources, buttons: [ButtonConfig; 6]) {
     spawner.spawn(logic_task()).unwrap();
