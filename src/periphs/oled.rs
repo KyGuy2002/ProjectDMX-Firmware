@@ -3,7 +3,7 @@ use embassy_rp::i2c::{self, Config};
 use embassy_time::{Duration, Instant, Timer};
 
 use core::sync::atomic::Ordering;
-use crate::{hardware::{OledIrqs, OledResources}, periphs::sensors::*};
+use crate::{hardware::{OledIrqs, OledResources}, periphs::sensors::{self, *}};
 use core::fmt::Write;
 use crate::periphs::eth::NET_IDENTITY;
 
@@ -26,7 +26,8 @@ use ssd1306::{
 // A white status bar along the top, the show-logic state centered in the
 // middle with a network-data X / checkmark to its left and a CPU pie chart
 // to its right, a 6-way button strip
-// low on the screen, and a 1px "alive" slider along the very bottom row.
+// with the 4 remote buttons above it low on the screen, and a 1px "alive"
+// slider along the very bottom row.
 // Mounted upside down: the controller flips the image (Rotate180), so all
 // drawing below is in normal coordinates.
 //
@@ -36,10 +37,12 @@ use ssd1306::{
 const TOP_BAR_H: i32 = 10;
 const TOP_TEXT_Y: i32 = 7;
 
+// Wired inputs (bottom row) and remote buttons (the row above it).
 const RECT_Y: i32 = 56;
-// Halfway between the top bar and the button strip.
-const STATE_Y: i32 = (TOP_BAR_H + RECT_Y) / 2;
 const RECT_H: i32 = 6;
+const REMOTE_RECT_Y: i32 = RECT_Y - RECT_H - 1;
+// Halfway between the top bar and the remote row.
+const STATE_Y: i32 = (TOP_BAR_H + REMOTE_RECT_Y) / 2;
 
 // X / checkmark (left edge) and CPU pie (right edge): MARK_SIZE squares,
 // centered on the state text. The state text is centered at x=64, so even
@@ -118,6 +121,7 @@ pub async fn oled_task(r: OledResources) {
         draw_cpu_pie(&mut frame, crate::CPU_STALL_PCT.load(Ordering::Relaxed));
         draw_state(&mut frame);
         draw_input_rects(&mut frame);
+        draw_remote_rects(&mut frame);
 
         slider_x += slider_dir * SLIDER_SPEED;
         if slider_x >= SLIDER_TRAVEL {
@@ -322,8 +326,8 @@ where
         .ok();
 }
 
-/// The 6 inputs as rectangles spanning the full width, right above the slider:
-/// filled while triggered (wired OR remote), outlined otherwise. Each segment
+/// The 6 wired inputs as rectangles spanning the full width, right above the
+/// slider: filled while triggered, outlined otherwise. Each segment
 /// leaves its rightmost column blank, which is what forms the 1px divider
 /// between segments (and before the slider).
 fn draw_input_rects<D>(display: &mut D)
@@ -342,6 +346,28 @@ where
         };
 
         Rectangle::new(Point::new(x0, RECT_Y), Size::new(w as u32, RECT_H as u32))
+            .into_styled(style)
+            .draw(display)
+            .ok();
+    }
+}
+
+/// The 4 remote buttons as a second strip right above the inputs: filled
+/// while held, outlined otherwise. Same 1px dividers as the input strip.
+fn draw_remote_rects<D>(display: &mut D)
+where
+    D: DrawTarget<Color = BinaryColor>,
+{
+    let seg_w = 128 / sensors::REMOTE_BUTTONS.len() as i32;
+
+    for (i, &button) in sensors::REMOTE_BUTTONS.iter().enumerate() {
+        let style = if remote_active(button) {
+            PrimitiveStyle::with_fill(BinaryColor::On)
+        } else {
+            PrimitiveStyle::with_stroke(BinaryColor::On, 1)
+        };
+
+        Rectangle::new(Point::new(i as i32 * seg_w, REMOTE_RECT_Y), Size::new((seg_w - 1) as u32, RECT_H as u32))
             .into_styled(style)
             .draw(display)
             .ok();

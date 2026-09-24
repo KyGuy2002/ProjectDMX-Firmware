@@ -23,7 +23,7 @@
         "start_channel": 10,
         "bg_files": ["idle-bg-2026.mp3", "overload-bg-2026.mp3"],
         "left_files": ["idle-bones-2026.mp3", "startup-bones-2026.mp3", "overload-bones-2026.mp3", "strike-bones-2026.mp3"],
-        "right_files": ["idle-frank-2026.mp3", "startup-frank-2026.mp3", "overload-frank-2026.mp3", "strike-frank-2026.mp3"]
+        "right_files": ["idle-frank-2026.mp3", "startup-frank-2026.mp3", "overload-frank-2026.mp3", "strike-frank-2026.mp3", "wake-frank-2026.mp3"]
     },
     "modules": {
         "slot_a": {

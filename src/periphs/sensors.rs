@@ -14,6 +14,7 @@ use embassy_time::{Duration, Instant, Timer};
 use crate::config::ButtonConfig;
 use crate::hardware::SensorResources;
 use crate::logic;
+use crate::periphs::mdns;
 
 
 /// `true` while the wired input is triggered. `reversed` is applied when the
@@ -26,25 +27,39 @@ pub static BUTTON_4_STATUS: AtomicBool = AtomicBool::new(false);
 pub static BUTTON_5_STATUS: AtomicBool = AtomicBool::new(false);
 pub static BUTTON_6_STATUS: AtomicBool = AtomicBool::new(false);
 
-/// Millis-since-boot (truncated to u32) of the last remote frame for each
-/// input, 0 = never. A held fob button repeats its frame every few tens of ms.
-static REMOTE_SEEN_MS: [AtomicU32; 6] = [const { AtomicU32::new(0) }; 6];
+/// Remote buttons, 'A'..='D'.
+pub const REMOTE_BUTTONS: [char; 4] = ['A', 'B', 'C', 'D'];
+
+/// Millis-since-boot (truncated to u32) of the last frame for each remote
+/// button, 0 = never. A held fob button repeats its frame every few tens of ms.
+static REMOTE_SEEN_MS: [AtomicU32; 4] = [const { AtomicU32::new(0) }; 4];
 
 /// How long after its last frame a remote button still counts as held. Longer
-/// than the OLED's 300ms refresh so a quick tap is always drawn.
+/// than the OLED's frame time so a quick tap is always drawn.
 const REMOTE_HOLD_MS: u32 = 500;
 
+fn remote_index(button: char) -> Option<usize> {
+    REMOTE_BUTTONS.iter().position(|&b| b == button)
+}
+
 /// Called for every frame of a remote button, repeats included.
-pub fn remote_seen(input: u8) {
-    if let Some(seen) = REMOTE_SEEN_MS.get((input as usize).wrapping_sub(1)) {
+pub fn remote_seen(button: char) {
+    if let Some(i) = remote_index(button) {
         let now = embassy_time::Instant::now().as_millis() as u32;
-        seen.store(now.max(1), Ordering::Relaxed);
+        REMOTE_SEEN_MS[i].store(now.max(1), Ordering::Relaxed);
     }
 }
 
-/// Whether input `input` (1..=6) is triggered right now: the wired input
-/// (after `reversed`) OR a remote button held for it. For display only; the
-/// logic works on presses, not levels.
+/// Whether remote `button` ('A'..='D') is held right now. For display only.
+pub fn remote_active(button: char) -> bool {
+    let Some(i) = remote_index(button) else { return false };
+    let seen = REMOTE_SEEN_MS[i].load(Ordering::Relaxed);
+    let now = embassy_time::Instant::now().as_millis() as u32;
+    seen != 0 && now.wrapping_sub(seen) < REMOTE_HOLD_MS
+}
+
+/// Whether wired input `input` (1..=6) is triggered right now (after
+/// `reversed`). For display only; the logic works on presses, not levels.
 pub fn button_active(input: u8) -> bool {
     let wired = match input {
         1 => &BUTTON_1_STATUS,
@@ -55,22 +70,39 @@ pub fn button_active(input: u8) -> bool {
         6 => &BUTTON_6_STATUS,
         _ => return false,
     };
-    let seen = REMOTE_SEEN_MS[input as usize - 1].load(Ordering::Relaxed);
-    let now = embassy_time::Instant::now().as_millis() as u32;
-    let remote = seen != 0 && now.wrapping_sub(seen) < REMOTE_HOLD_MS;
-    wired.load(Ordering::Relaxed) || remote
+    wired.load(Ordering::Relaxed)
 }
 
-/// Button numbers (1..=6), sent on each press (wired or remote). A critical
-/// section rather than ThreadModeRawMutex: the remote sends from the RF
-/// interrupt executor. Held only for a queue push/pop, once per press.
-static BUTTON_PRESSES: Channel<CriticalSectionRawMutex, u8, 8> = Channel::new();
+/// Something for the show logic to handle.
+#[derive(Clone, Copy, PartialEq, defmt::Format)]
+enum Press {
+    /// Wired input 1..=6 (or a `press_later` of one).
+    Input(u8),
+    /// Remote button 'A'..='D'.
+    Remote(char),
+    /// FPP has just appeared on the network (see `fpp_watch_task`).
+    FppOnline,
+}
 
-/// Hands a press of input `button` (1..=6) to the show logic.
-pub fn press(button: u8) {
-    if BUTTON_PRESSES.try_send(button).is_err() {
-        warn!("Button {} press dropped: logic queue full", button);
+/// Presses, wired and remote. A critical section rather than
+/// ThreadModeRawMutex: the remote sends from the RF interrupt executor. Held
+/// only for a queue push/pop, once per press.
+static PRESSES: Channel<CriticalSectionRawMutex, Press, 8> = Channel::new();
+
+fn send(press: Press) {
+    if PRESSES.try_send(press).is_err() {
+        warn!("{} dropped: logic queue full", press);
     }
+}
+
+/// Hands a press of wired input `button` (1..=6) to the show logic.
+pub fn press(button: u8) {
+    send(Press::Input(button));
+}
+
+/// Hands a press of remote `button` ('A'..='D') to the show logic.
+pub fn press_remote(button: char) {
+    send(Press::Remote(button));
 }
 
 /// Current show-logic state, for the web page. `None` until `on_boot` has run.
@@ -85,8 +117,8 @@ pub fn logic_state() -> Option<logic::State> {
 static SCHEDULED: BlockingMutex<ThreadModeRawMutex, Cell<Option<(u8, Instant)>>> =
     BlockingMutex::new(Cell::new(None));
 
-/// Acts as if `button` were pressed `delay` from now, going through
-/// `on_button_pressed` like a real press.
+/// Acts as if wired input `button` were pressed `delay` from now, going
+/// through `on_button_pressed` like a real press.
 ///
 /// One slot: scheduling again replaces the pending press. The pending press is
 /// cancelled if the state changes before it fires (other than by the very
@@ -103,6 +135,7 @@ const WIRED_INPUTS_ENABLED: bool = true;
 
 pub fn start_sensors(spawner: &Spawner, r: SensorResources, buttons: [ButtonConfig; 6]) {
     spawner.spawn(logic_task()).unwrap();
+    spawner.spawn(fpp_watch_task()).unwrap();
 
     if !WIRED_INPUTS_ENABLED {
         info!("Wired inputs disabled (WIRED_INPUTS_ENABLED = false)");
@@ -119,7 +152,8 @@ pub fn start_sensors(spawner: &Spawner, r: SensorResources, buttons: [ButtonConf
 
 
 /// Runs the show logic in `logic.rs`: `on_boot` once, then `on_button_pressed`
-/// for every press (real or `press_later`), one at a time.
+/// / `on_remote_pressed` for every press (real or `press_later`), one at a
+/// time.
 #[embassy_executor::task]
 async fn logic_task() -> ! {
     let mut state = logic::on_boot();
@@ -128,22 +162,26 @@ async fn logic_task() -> ! {
 
     loop {
         let scheduled = SCHEDULED.lock(|s| s.get());
-        let (button, timed) = match scheduled {
-            Some((button, at)) => match select(BUTTON_PRESSES.receive(), Timer::at(at)).await {
+        let (press, timed) = match scheduled {
+            Some((button, at)) => match select(PRESSES.receive(), Timer::at(at)).await {
                 Either::First(pressed) => (pressed, false),
                 Either::Second(()) => {
                     SCHEDULED.lock(|s| s.set(None));
-                    (button, true)
+                    (Press::Input(button), true)
                 }
             },
-            None => (BUTTON_PRESSES.receive().await, false),
+            None => (PRESSES.receive().await, false),
         };
 
         // Re-read: a timed press has just cleared the slot.
         let pending = SCHEDULED.lock(|s| s.get());
         let before = state;
-        logic::on_button_pressed(button, &mut state);
-        info!("Logic: button {} {}, {} -> {}", button, if timed { "timer" } else { "pressed" }, before, state);
+        match press {
+            Press::Input(button) => logic::on_button_pressed(button, &mut state),
+            Press::Remote(button) => logic::on_remote_pressed(button, &mut state),
+            Press::FppOnline => logic::on_fpp_online(&mut state),
+        }
+        info!("Logic: {} {}, {} -> {}", press, if timed { "timer" } else { "pressed" }, before, state);
 
         // Cancel a pending press on a state change, unless this handler is the
         // one that scheduled it.
@@ -152,6 +190,41 @@ async fn logic_task() -> ! {
             SCHEDULED.lock(|s| s.set(None));
         }
         LOGIC_STATE.lock(|s| s.set(Some(state)));
+    }
+}
+
+
+/// How long FPP gets after it first answers mDNS before `on_fpp_online` runs.
+/// Its name comes up before fppd is ready to play, and commands sent in that
+/// gap are accepted but do nothing.
+const FPP_SETTLE: Duration = Duration::from_secs(5);
+
+/// Sends `Press::FppOnline` each time FPP appears on the network: once after
+/// our boot (whether FPP was already up or boots later), and again after it
+/// reboots. Uses the mDNS discovery the web page shows, which forgets FPP ~20s
+/// after it stops answering.
+#[embassy_executor::task]
+async fn fpp_watch_task() -> ! {
+    let mut online = false;
+
+    loop {
+        let now_online = mdns::fpp_ip().is_some();
+
+        if now_online && !online {
+            info!("Logic: FPP found, starting in {}s", FPP_SETTLE.as_secs());
+            Timer::after(FPP_SETTLE).await;
+            // Only counts if it's still there after settling; otherwise the
+            // next appearance gets its own try.
+            online = mdns::fpp_ip().is_some();
+            if online {
+                send(Press::FppOnline);
+            }
+        } else if !now_online && online {
+            info!("Logic: FPP lost");
+            online = false;
+        }
+
+        Timer::after_secs(1).await;
     }
 }
 

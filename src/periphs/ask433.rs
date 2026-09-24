@@ -1,6 +1,6 @@
 //! 433 MHz ASK remote (EV1527 / PT2262 fixed-code fob) on a cheap
-//! superheterodyne receiver. Each fob button acts as a press of one of the
-//! board's inputs, going through `logic.rs` exactly like a wired press.
+//! superheterodyne receiver. Each fob button press goes to
+//! `on_remote_pressed` in `logic.rs`.
 //!
 //! Runs on its own interrupt executor (RF_EXECUTOR in main.rs) so thread-mode
 //! stalls can't overflow the PIO FIFO and drop pulses.
@@ -18,25 +18,25 @@ use embassy_time::{Duration, Instant};
 use crate::hardware::{RemoteIrqs, RemoteResources};
 use crate::periphs::sensors;
 
-/// One fob button: 20-bit fob address, 4-bit data value, and the input number
-/// (1..=6) it presses. One fob has the same address on every button; the
-/// buttons are told apart by data.
+/// One fob button: 20-bit fob address, 4-bit data value, and which remote
+/// button ('A'..='D') it is. One fob has the same address on every button;
+/// the buttons are told apart by data.
 struct RemoteButton {
     address: u32,
     data: u8,
-    input: u8,
+    button: char,
 }
 
 const REMOTE_BUTTONS: &[RemoteButton] = &[
-    RemoteButton { address: 0x3fcad, data: 0x8, input: 1 }, // A
-    RemoteButton { address: 0x3fcad, data: 0x4, input: 2 }, // B
-    RemoteButton { address: 0x3fcad, data: 0x2, input: 3 }, // C
-    RemoteButton { address: 0x3fcad, data: 0x1, input: 4 }, // D
+    RemoteButton { address: 0x3fcad, data: 0x8, button: 'A' },
+    RemoteButton { address: 0x3fcad, data: 0x4, button: 'B' },
+    RemoteButton { address: 0x3fcad, data: 0x2, button: 'C' },
+    RemoteButton { address: 0x3fcad, data: 0x1, button: 'D' },
 
-    RemoteButton { address: 0xc136d, data: 0x8, input: 1 }, // A
-    RemoteButton { address: 0xc136d, data: 0x4, input: 2 }, // B
-    RemoteButton { address: 0xc136d, data: 0x2, input: 3 }, // C
-    RemoteButton { address: 0xc136d, data: 0x1, input: 4 }, // D
+    RemoteButton { address: 0xc136d, data: 0x8, button: 'A' },
+    RemoteButton { address: 0xc136d, data: 0x4, button: 'B' },
+    RemoteButton { address: 0xc136d, data: 0x2, button: 'C' },
+    RemoteButton { address: 0xc136d, data: 0x1, button: 'D' },
 ];
 
 // Cheap superheterodyne receivers have no squelch, so the DATA pin is never
@@ -167,7 +167,7 @@ fn handle_frame(last: &mut Option<(u32, Instant)>, code: u32) {
         return;
     };
 
-    sensors::remote_seen(button.input);
+    sensors::remote_seen(button.button);
 
     // Only frames we act on reset the window, so a garbled frame in the
     // middle of a hold can't split it into two presses.
@@ -178,6 +178,6 @@ fn handle_frame(last: &mut Option<(u32, Instant)>, code: u32) {
         return;
     }
 
-    info!("ask433 remote: input {} pressed", button.input);
-    sensors::press(button.input);
+    info!("ask433 remote: {} pressed", button.button);
+    sensors::press_remote(button.button);
 }

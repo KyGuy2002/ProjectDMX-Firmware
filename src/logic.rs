@@ -1,9 +1,10 @@
 //! Show logic: what the board does when an input is pressed.
 //!
 //! Edit this file to program the show. `on_boot` runs once at startup and
-//! returns the starting state; `on_button_pressed` runs on every press (buttons
-//! are numbered 1..=6, matching the board) and can change the state. The 433
-//! MHz remote's A-D buttons press inputs 1-4 (see periphs/ask433.rs).
+//! returns the starting state; `on_button_pressed` runs on every wired press
+//! (inputs 1..=6, matching the board), `on_remote_pressed` on every 433 MHz
+//! remote press (buttons 'A'..='D'), and `on_fpp_online` whenever FPP comes
+//! online. Any of them can change the state.
 //!
 //! The FPP helpers queue a command and return straight away; commands are sent
 //! to FPP in the order they were called. Names are the file name without
@@ -49,8 +50,17 @@ pub enum State {
     Overload,
 }
 
+/// Nothing is sent to FPP here: at boot it's often not up yet, and commands
+/// that arrive while it's still starting get lost. `on_fpp_online` starts the
+/// show once it's actually there.
 pub fn on_boot() -> State {
-    go_idle()
+    State::Idle
+}
+
+/// FPP has just appeared on the network - once after our boot, and again
+/// whenever it reboots. Whatever it was playing is gone, so start over.
+pub fn on_fpp_online(state: &mut State) {
+    *state = go_idle();
 }
 
 pub fn on_button_pressed(button: u8, state: &mut State) {
@@ -88,6 +98,25 @@ pub fn on_button_pressed(button: u8, state: &mut State) {
                 *state = go_idle();
             }
         }
+
+        _ => {}
+    }
+}
+
+/// The remote runs the whole show from one button. Each case reuses the
+/// matching input's handler, so the same guards and timers apply (A from
+/// idle also schedules the automatic strike).
+pub fn on_remote_pressed(button: char, state: &mut State) {
+    match button {
+        // Step: idle -> startup -> strike/overload -> idle.
+        'A' => match *state {
+            State::Idle => on_button_pressed(1, state),
+            State::Running => on_button_pressed(2, state),
+            State::Overload => on_button_pressed(4, state),
+        },
+
+        // Frank, during overload only.
+        'B' => on_button_pressed(3, state),
 
         _ => {}
     }
