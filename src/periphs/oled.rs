@@ -64,6 +64,13 @@ const SLIDER_SPEED: i32 = 2;
 // 25 fps. Cheap because only the 8-row pages that changed are sent (see the
 // loop below): normally just the bottom page (slider + input boxes).
 const FRAME_TIME: Duration = Duration::from_millis(40);
+/// One page is resent unconditionally every this many frames (see the loop):
+/// the whole panel is rewritten every 8 * 5 * 40ms = 1.6s.
+const REFRESH_EVERY: u32 = 5;
+
+/// DIAG: microseconds spent rendering + blocked on I2C (not counting the
+/// yields between pages), reset by the audio underrun report.
+pub static OLED_BUSY_US: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Frame layout the SSD1306 uses: 8 pages of 8 rows, one byte per column per
 /// page, LSB = top row of the page.
@@ -103,6 +110,12 @@ pub async fn oled_task(r: OledResources) {
     // Black ink, for text on the white top bar.
     let text_off = MonoTextStyle::new(&FONT_6X9, BinaryColor::Off);
 
+    // Everything but the slider, re-rendered only when something it shows
+    // changes: rendering the whole screen (big text, pie, filled bar) costs
+    // ~5ms, and at 25fps that alone starved MP3 decode into audio underruns.
+    let mut base = Frame::new();
+    let mut base_shows: Option<Shown> = None;
+
     let mut frame = Frame::new();
     // What the panel currently shows. `None` forces every page out, e.g. at
     // power-up when the panel's RAM is garbage.
@@ -111,17 +124,28 @@ pub async fn oled_task(r: OledResources) {
     let mut slider_x: i32 = 0;
     let mut slider_dir: i32 = 1;
 
+    // A page that never changes (e.g. the blank band above the button rows)
+    // would otherwise be sent exactly once, at power-up - one bad write and
+    // the panel shows garbage there forever. So every REFRESH_EVERY frames one
+    // page is resent regardless, cycling through all of them.
+    let mut frame_no: u32 = 0;
+    let mut refresh_page: usize = 0;
+
     loop {
         let frame_start = Instant::now();
 
-        frame.clear();
-
-        draw_top_bar(&mut frame, text_off);
-        draw_data_mark(&mut frame, crate::input_active());
-        draw_cpu_pie(&mut frame, crate::CPU_STALL_PCT.load(Ordering::Relaxed));
-        draw_state(&mut frame);
-        draw_input_rects(&mut frame);
-        draw_remote_rects(&mut frame);
+        let shows = Shown::now();
+        if base_shows != Some(shows) {
+            base.clear();
+            draw_top_bar(&mut base, text_off);
+            draw_data_mark(&mut base, shows.receiving);
+            draw_cpu_pie(&mut base, shows.cpu);
+            draw_state(&mut base);
+            draw_input_rects(&mut base);
+            draw_remote_rects(&mut base);
+            base_shows = Some(shows);
+        }
+        frame.0 = base.0;
 
         slider_x += slider_dir * SLIDER_SPEED;
         if slider_x >= SLIDER_TRAVEL {
@@ -132,15 +156,27 @@ pub async fn oled_task(r: OledResources) {
             slider_dir = 1;
         }
         draw_slider(&mut frame, slider_x);
+        let mut busy = frame_start.elapsed(); // DIAG
+
+        let forced = if frame_no % REFRESH_EVERY == 0 {
+            refresh_page = (refresh_page + 1) % PAGES;
+            Some(refresh_page)
+        } else {
+            None
+        };
+        frame_no = frame_no.wrapping_add(1);
 
         for page in 0..PAGES {
-            if sent.as_ref().is_some_and(|s| s.page(page) == frame.page(page)) {
+            let unchanged = sent.as_ref().is_some_and(|s| s.page(page) == frame.page(page));
+            if unchanged && forced != Some(page) {
                 continue;
             }
 
             let y = (page * 8) as u8;
+            let send_start = Instant::now(); // DIAG
             let ok = display.set_draw_area((0, y), (128, y + 8)).is_ok()
                 && display.draw(frame.page(page)).is_ok();
+            busy += send_start.elapsed(); // DIAG
             if ok {
                 sent.get_or_insert_with(Frame::new).page_mut(page).copy_from_slice(frame.page(page));
             } else {
@@ -152,7 +188,33 @@ pub async fn oled_task(r: OledResources) {
             embassy_futures::yield_now().await;
         }
 
+        OLED_BUSY_US.fetch_add(busy.as_micros() as u32, Ordering::Relaxed); // DIAG
         Timer::at(frame_start + FRAME_TIME).await;
+    }
+}
+
+/// Everything the non-slider part of the screen depends on. A change in any of
+/// it triggers a re-render of `base`.
+#[derive(Clone, Copy, PartialEq)]
+struct Shown {
+    has_net: bool,
+    receiving: bool,
+    cpu: u8,
+    state: Option<crate::logic::State>,
+    inputs: [bool; 6],
+    remotes: [bool; 4],
+}
+
+impl Shown {
+    fn now() -> Self {
+        Shown {
+            has_net: NET_IDENTITY.try_get().is_some(),
+            receiving: crate::input_active(),
+            cpu: crate::CPU_STALL_PCT.load(Ordering::Relaxed),
+            state: logic_state(),
+            inputs: core::array::from_fn(|i| button_active(i as u8 + 1)),
+            remotes: sensors::REMOTE_BUTTONS.map(remote_active),
+        }
     }
 }
 

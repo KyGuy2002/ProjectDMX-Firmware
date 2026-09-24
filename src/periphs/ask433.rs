@@ -62,6 +62,9 @@ const MAX_FRAME_BITS: u32 = 32;
 /// this window is the same press; releasing and clicking again after it is a
 /// new one.
 const REPEAT_WINDOW: Duration = Duration::from_millis(500);
+
+/// DIAG: pulse pairs processed, reset by the audio underrun report.
+pub static RF_PULSES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 #[embassy_executor::task]
 pub async fn ask433_task(r: RemoteResources) {
     info!("ASK433 remote receiver started.");
@@ -125,6 +128,7 @@ pub async fn ask433_task(r: RemoteResources) {
     loop {
         let high = sm0.rx().wait_pull().await;
         let low = sm0.rx().wait_pull().await;
+        RF_PULSES.fetch_add(1, core::sync::atomic::Ordering::Relaxed); // DIAG
 
         if high < MIN_PULSE_US || low < MIN_PULSE_US {
             // Noise glitch - drop whatever frame was in progress.

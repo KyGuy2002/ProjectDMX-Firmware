@@ -24,7 +24,9 @@
 //! Which level counts as "pressed" is set per input in config.jsonc
 //! (`buttons[n].reversed`).
 
-use embassy_time::Duration;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+use embassy_time::{Duration, Instant};
 
 use crate::periphs::fpp;
 use crate::periphs::sensors::press_later;
@@ -41,6 +43,11 @@ const STARTUP: &str = "startup-2026-e";
 const STRIKE_MS: u64 = 1800;
 const STRIKE: &str = "strike-2026-e";
 const FRANK: &str = "frank-2026-e";
+/// Frank can't be retriggered within this long of the last time it played.
+const FRANK_COOLDOWN_MS: u32 = 3000;
+
+/// Millis-since-boot (truncated to u32) Frank last started, 0 = never.
+static FRANK_LAST_MS: AtomicU32 = AtomicU32::new(0);
 
 /// Add states as needed. Shown on the web status page.
 #[derive(Clone, Copy, PartialEq, Debug, defmt::Format)]
@@ -85,10 +92,16 @@ pub fn on_button_pressed(button: u8, state: &mut State) {
             }
         }
 
-        // Frank, during overload only. State stays the same.
+        // Frank, during overload only, at most once per FRANK_COOLDOWN_MS.
+        // State stays the same.
         3 => {
             if *state == State::Overload {
-                fpp::start_effect(FRANK, false);
+                let now = (Instant::now().as_millis() as u32).max(1);
+                let last = FRANK_LAST_MS.load(Ordering::Relaxed);
+                if last == 0 || now.wrapping_sub(last) >= FRANK_COOLDOWN_MS {
+                    fpp::start_effect(FRANK, false);
+                    FRANK_LAST_MS.store(now, Ordering::Relaxed);
+                }
             }
         }
 

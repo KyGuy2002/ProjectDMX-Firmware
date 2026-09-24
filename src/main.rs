@@ -63,8 +63,13 @@ pub static DMX_MATRIX: BlockingMutex<CriticalSectionRawMutex, RefCell<[[u8; 512]
 // it preempts every thread-mode task (OLED I2C flush, NeoPixel effects, sACN
 // parsing, ...), which matters because the I2S PIO FIFO only holds ~180us of
 // samples between DMA transfers; anything that blocks the executor longer than
-// that at a buffer boundary causes an audible underrun. P3 keeps it below the
-// hardware driver IRQs (DMA/timer) it depends on.
+// that at a buffer boundary causes an audible underrun.
+//
+// Priorities (embassy-rp only exposes P0..P3, P3 lowest): this executor and
+// DMA_IRQ_0 (which completes its I2S transfers; embassy-rp sets it to P3) both
+// run at P2, one level above the RF executor below. Equal priorities never
+// preempt each other, so with all three at P3 a burst of receiver noise kept
+// the RF task busy while an I2S DMA completion waited - audible stutter.
 //
 // MP3 decode + SD reads (audio_decode_task) deliberately do NOT run here: an
 // interrupt executor only lets *sibling tasks on the same executor* get a
@@ -85,10 +90,8 @@ unsafe fn SWI_IRQ_1() {
 // into an 8-deep RX FIFO with `push noblock`, so a thread-mode stall of a few
 // ms (OLED flush, neo effects, MP3 decode) overflowed it and silently dropped
 // pulses mid-frame - only ~10% of presses decoded. Here it preempts thread
-// mode. P3 is the lowest priority available (same as the audio feed), so the
-// two never preempt each other, only take turns; a wake here is a few
-// microseconds (tens when it logs a frame), well inside the audio FIFO's
-// ~180us of slack.
+// mode, and at P3 it's below the audio feed and DMA (P2), so it can never
+// hold them up.
 static RF_EXECUTOR: InterruptExecutor = InterruptExecutor::new();
 
 #[interrupt]
@@ -204,7 +207,8 @@ async fn main(spawner: Spawner) {
     // normal thread-mode task. The SD card is mounted inside audio_decode_task:
     // its VolumeManager holds a RefCell (not Send), so the handle must never
     // leave the executor it's used on.
-    interrupt::SWI_IRQ_1.set_priority(Priority::P3);
+    interrupt::DMA_IRQ_0.set_priority(Priority::P2);
+    interrupt::SWI_IRQ_1.set_priority(Priority::P2);
     let audio_spawner = AUDIO_EXECUTOR.start(interrupt::SWI_IRQ_1);
     audio_spawner.spawn(periphs::audio::audio_output_task(r.audio)).unwrap();
     spawner.spawn(periphs::audio::audio_decode_task(config.audio, r.sd)).unwrap();
@@ -215,7 +219,7 @@ async fn main(spawner: Spawner) {
         periphs::sensors::start_sensors(&spawner, r.sensors, config.buttons); // Sensors + show logic
         interrupt::SWI_IRQ_2.set_priority(Priority::P3);
         let rf_spawner = RF_EXECUTOR.start(interrupt::SWI_IRQ_2);
-        rf_spawner.spawn(periphs::ask433::ask433_task(r.remote)).unwrap(); // 433 MHz remote -> inputs 1-4
+        rf_spawner.spawn(periphs::ask433::ask433_task(r.remote)).unwrap(); // 433 MHz remote
         spawner.spawn(periphs::mdns::mdns_task(stack)).unwrap(); // mDNS responder + resolver
         spawner.spawn(periphs::http::http_task(stack)).unwrap(); // Web status page
         spawner.spawn(periphs::http::http_task(stack)).unwrap(); // (second listener)

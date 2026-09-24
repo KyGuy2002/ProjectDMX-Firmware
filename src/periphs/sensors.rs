@@ -197,7 +197,7 @@ async fn logic_task() -> ! {
 /// How long FPP gets after it first answers mDNS before `on_fpp_online` runs.
 /// Its name comes up before fppd is ready to play, and commands sent in that
 /// gap are accepted but do nothing.
-const FPP_SETTLE: Duration = Duration::from_secs(5);
+const FPP_SETTLE: Duration = Duration::from_millis(500);
 
 /// Sends `Press::FppOnline` each time FPP appears on the network: once after
 /// our boot (whether FPP was already up or boots later), and again after it
@@ -211,7 +211,7 @@ async fn fpp_watch_task() -> ! {
         let now_online = mdns::fpp_ip().is_some();
 
         if now_online && !online {
-            info!("Logic: FPP found, starting in {}s", FPP_SETTLE.as_secs());
+            info!("Logic: FPP found, starting in {}ms", FPP_SETTLE.as_millis());
             Timer::after(FPP_SETTLE).await;
             // Only counts if it's still there after settling; otherwise the
             // next appearance gets its own try.
