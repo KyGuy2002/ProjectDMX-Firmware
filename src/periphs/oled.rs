@@ -68,10 +68,6 @@ const FRAME_TIME: Duration = Duration::from_millis(40);
 /// the whole panel is rewritten every 8 * 5 * 40ms = 1.6s.
 const REFRESH_EVERY: u32 = 5;
 
-/// DIAG: microseconds spent rendering + blocked on I2C (not counting the
-/// yields between pages), reset by the audio underrun report.
-pub static OLED_BUSY_US: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-
 /// Frame layout the SSD1306 uses: 8 pages of 8 rows, one byte per column per
 /// page, LSB = top row of the page.
 const PAGES: usize = 8;
@@ -156,7 +152,6 @@ pub async fn oled_task(r: OledResources) {
             slider_dir = 1;
         }
         draw_slider(&mut frame, slider_x);
-        let mut busy = frame_start.elapsed(); // DIAG
 
         let forced = if frame_no % REFRESH_EVERY == 0 {
             refresh_page = (refresh_page + 1) % PAGES;
@@ -173,10 +168,8 @@ pub async fn oled_task(r: OledResources) {
             }
 
             let y = (page * 8) as u8;
-            let send_start = Instant::now(); // DIAG
             let ok = display.set_draw_area((0, y), (128, y + 8)).is_ok()
                 && display.draw(frame.page(page)).is_ok();
-            busy += send_start.elapsed(); // DIAG
             if ok {
                 sent.get_or_insert_with(Frame::new).page_mut(page).copy_from_slice(frame.page(page));
             } else {
@@ -188,7 +181,6 @@ pub async fn oled_task(r: OledResources) {
             embassy_futures::yield_now().await;
         }
 
-        OLED_BUSY_US.fetch_add(busy.as_micros() as u32, Ordering::Relaxed); // DIAG
         Timer::at(frame_start + FRAME_TIME).await;
     }
 }

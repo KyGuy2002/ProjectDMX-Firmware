@@ -3,6 +3,10 @@
 
 use defmt::*;
 use defmt_rtt as _;
+
+// Milliseconds since boot on every log line (shown by `{t}` in the probe-rs
+// log format), so boot timing can be read straight off the log.
+defmt::timestamp!("{=u64:ms}", embassy_time::Instant::now().as_millis());
 use panic_probe as _;
 
 mod config;

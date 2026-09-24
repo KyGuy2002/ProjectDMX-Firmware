@@ -525,14 +525,8 @@ pub async fn audio_output_task(r: AudioResources) {
     let mut underruns: u32 = 0;
     let mut reported: u32 = 0;
     let mut last_report = Instant::now();
-    // DIAG: buffers where decode hadn't finished the next one by the time the
-    // previous one finished playing (vs. a late DMA hand-off).
-    let mut decode_late: u32 = 0;
 
     loop {
-        if !first_write && FILLED_CHANNEL.is_empty() {
-            decode_late += 1;
-        }
         let buf = FILLED_CHANNEL.receive().await;
         i2s.write(&buf[..]).await;
 
@@ -551,20 +545,12 @@ pub async fn audio_output_task(r: AudioResources) {
         // is silent and a bad run doesn't flood the log (which would make it worse).
         let now = Instant::now();
         if underruns != reported && (now - last_report).as_millis() >= 2000 {
-            let ms = (now - last_report).as_millis() as u32;
-            let oled_us = crate::periphs::oled::OLED_BUSY_US.swap(0, core::sync::atomic::Ordering::Relaxed);
-            let rf = crate::periphs::ask433::RF_PULSES.swap(0, core::sync::atomic::Ordering::Relaxed);
             println!(
-                "AUDIO underruns: {} total (+{} in {}ms) | DIAG decode late {}, cpu {}%, oled busy {}ms/s, rf {} pulses/s",
+                "AUDIO underruns: {} total (+{} in {}ms)",
                 underruns,
                 underruns - reported,
-                ms,
-                decode_late,
-                crate::CPU_STALL_PCT.load(core::sync::atomic::Ordering::Relaxed),
-                oled_us / ms.max(1),
-                rf * 1000 / ms.max(1),
+                (now - last_report).as_millis(),
             );
-            decode_late = 0;
             reported = underruns;
             last_report = now;
         }

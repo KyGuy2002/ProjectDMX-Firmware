@@ -48,6 +48,9 @@ pub const FPP_HOST: &str = "fpp.local";
 const SERVICE_SUFFIX: &str = "._pdmx._tcp.local";
 /// How often to ask who's out there.
 const BROWSE_INTERVAL: Duration = Duration::from_secs(5);
+/// Until FPP has answered, ask this often instead: the show logic waits on
+/// FPP being found, and a missed first query would otherwise cost 5s.
+const BROWSE_INTERVAL_NO_FPP: Duration = Duration::from_secs(1);
 /// A peer (or FPP) not heard from for this long, i.e. a few missed browses, is
 /// gone. We send no goodbye packets, so this is the only way one disappears.
 const SEEN_TTL: Duration = Duration::from_secs(20);
@@ -63,6 +66,8 @@ const TYPE_NSEC: u16 = 47;
 const TYPE_ANY: u16 = 255;
 
 const CLASS_IN: u16 = 1;
+/// Top bit of a question's class: "unicast response requested".
+const QU: u16 = 0x8000;
 /// Set on records that only this host answers for (everything but the shared PTRs).
 const CACHE_FLUSH: u16 = 0x8000;
 
@@ -251,7 +256,7 @@ pub async fn mdns_task(stack: Stack<'static>) -> ! {
                         RESOLVE_RESP.signal(None);
                         pending = None;
                     } else {
-                        if let Some(len) = build_query(&mut tx, &[(p.name.as_str(), TYPE_A)]) {
+                        if let Some(len) = build_query(&mut tx, &[(p.name.as_str(), TYPE_A)], false) {
                             send(&socket, &tx[..len], dest).await;
                         }
                         p.sent += 1;
@@ -262,11 +267,16 @@ pub async fn mdns_task(stack: Stack<'static>) -> ! {
                 if next_browse <= now {
                     // One packet asks for both: other controllers and FPP.
                     let questions = [(SERVICE_TYPE, TYPE_PTR), (FPP_HOST, TYPE_A)];
-                    if let Some(len) = build_query(&mut tx, &questions) {
+                    // Until FPP has answered, ask for direct (unicast)
+                    // replies: the show waits on finding FPP, and RFC 6762
+                    // recommends QU for a host's first queries anyway.
+                    let fpp_known = fpp_ip().is_some();
+                    if let Some(len) = build_query(&mut tx, &questions, !fpp_known) {
                         send(&socket, &tx[..len], dest).await;
                     }
                     DISCOVERY.lock(|d| d.borrow_mut().prune(now));
-                    next_browse = now + BROWSE_INTERVAL;
+                    let interval = if fpp_ip().is_some() { BROWSE_INTERVAL } else { BROWSE_INTERVAL_NO_FPP };
+                    next_browse = now + interval;
                 }
             }
         }
@@ -410,7 +420,9 @@ fn write_record(w: &mut Writer, rec: u8, names: &Names, ip: Ipv4Address) -> Opti
 // Resolver: query out, response in
 // -------------------------------------------------------------------------
 
-fn build_query(out: &mut [u8], questions: &[(&str, u16)]) -> Option<usize> {
+/// `unicast`: set the QU bit (RFC 6762 §5.4) so responders answer straight to
+/// us instead of multicasting.
+fn build_query(out: &mut [u8], questions: &[(&str, u16)], unicast: bool) -> Option<usize> {
     let mut w = Writer { buf: out, pos: 0 };
     w.u16(0)?; // id
     w.u16(0)?; // flags: standard query
@@ -419,7 +431,7 @@ fn build_query(out: &mut [u8], questions: &[(&str, u16)]) -> Option<usize> {
     for (name, qtype) in questions {
         w.name(name)?;
         w.u16(*qtype)?;
-        w.u16(CLASS_IN)?;
+        w.u16(if unicast { CLASS_IN | QU } else { CLASS_IN })?;
     }
     Some(w.pos)
 }

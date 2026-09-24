@@ -3,11 +3,10 @@
 //!
 //! The helpers below queue a command and return immediately; `fpp_task` sends
 //! them in order, one GET per connection. A command that can't reach FPP (name
-//! not found over mDNS, connect or write failed) is retried until it gets
-//! through, so commands issued at boot - before FPP has finished starting - still
-//! land once it's up, and presses made while it's down replay in order. A
-//! command FPP answers with an error status is logged and dropped: retrying
-//! won't fix a misspelled name.
+//! not found over mDNS, connect or write failed) or that FPP answers with a 5xx
+//! (it returns 503 briefly while starting up) is retried every 100ms until it
+//! gets through, and presses made while it's down replay in order. A 4xx is
+//! logged and dropped: retrying won't fix a misspelled name.
 //!
 //! Sequence and effect names are the file name without `.fseq`.
 
@@ -108,7 +107,12 @@ pub fn fpp_status() -> FppStatus {
 // -------------------------------------------------------------------------
 
 const FPP_PORT: u16 = 80;
-const RETRY_DELAY: Duration = Duration::from_secs(2);
+/// Between attempts at a command FPP couldn't take: unreachable, or a 5xx
+/// (FPP answers 503 for a moment while it starts up).
+const RETRY_DELAY: Duration = Duration::from_millis(100);
+/// After this many failed connections in a row, look FPP's address up again in
+/// case it came back somewhere else. ~1s at RETRY_DELAY.
+const RELOOKUP_AFTER: u32 = 10;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const IO_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -152,13 +156,21 @@ pub async fn fpp_task(stack: Stack<'static>, host: String<MAX_HOSTNAME_LEN>) -> 
             }
         };
 
+        // Only the first failure is logged; retries run 10x a second.
+        let mut attempts: u32 = 0;
+        let mut conn_failures: u32 = 0;
+
         loop {
+            attempts += 1;
+
             let addr = match ip {
                 Some(addr) => addr,
                 None => match lookup(&host).await {
                     Some(addr) => *ip.insert(addr),
                     None => {
-                        warn!("FPP: no answer for {}. Retrying...", host.as_str());
+                        if attempts == 1 {
+                            warn!("FPP: no answer for {}. Retrying...", host.as_str());
+                        }
                         set_status(FppStatus::NoHost);
                         Timer::after(RETRY_DELAY).await;
                         continue;
@@ -168,19 +180,37 @@ pub async fn fpp_task(stack: Stack<'static>, host: String<MAX_HOSTNAME_LEN>) -> 
 
             match get(stack, &mut rx_buffer, &mut tx_buffer, addr, &host, &path).await {
                 Ok(code) if (200..300).contains(&code) => {
-                    info!("FPP: {} -> {}", path.as_str(), code);
+                    if attempts == 1 {
+                        info!("FPP: {} -> {}", path.as_str(), code);
+                    } else {
+                        info!("FPP: {} -> {} (after {} attempts)", path.as_str(), code, attempts);
+                    }
                     set_status(FppStatus::Online);
                     break;
                 }
+                // Busy or still starting - try again.
+                Ok(code) if code >= 500 => {
+                    if attempts == 1 {
+                        warn!("FPP: {} -> {}. Retrying...", path.as_str(), code);
+                    }
+                    Timer::after(RETRY_DELAY).await;
+                }
+                // 4xx: the command itself is wrong (e.g. a misspelled name).
+                // Retrying can't fix it and would hold up every command behind it.
                 Ok(code) => {
                     warn!("FPP: {} -> {} (rejected, not retrying)", path.as_str(), code);
                     set_status(FppStatus::Rejected);
                     break;
                 }
                 Err(()) => {
-                    warn!("FPP: {} failed to reach {}. Retrying...", path.as_str(), addr);
+                    if attempts == 1 {
+                        warn!("FPP: {} failed to reach {}. Retrying...", path.as_str(), addr);
+                    }
                     set_status(FppStatus::NoConn);
-                    ip = None;
+                    conn_failures += 1;
+                    if conn_failures % RELOOKUP_AFTER == 0 {
+                        ip = None;
+                    }
                     Timer::after(RETRY_DELAY).await;
                 }
             }
