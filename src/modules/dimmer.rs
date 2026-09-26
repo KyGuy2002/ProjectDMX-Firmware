@@ -61,9 +61,10 @@ pub async fn dimmer_slot_d_task(settings: DimmerConfig, r: SlotDDimmerResources)
 ///   out0 = pin1 = SLICE4 chan A     out1 = pin2 = SLICE3 chan A
 ///   out2 = pin3 = SLICE2 chan B     out3 = pin4 = SLICE8 chan B
 ///
-/// NOTE: channel -> physical output order is NOT verified on hardware. Slot D's
-/// connector runs opposite its pin numbers; slot B may too. If outputs come out
-/// reversed, swap `lv[0..3]` for `lv[3..0]` in the loop below.
+/// Like slot D, the connector's physical output order runs *opposite* the pin
+/// numbers (verified on hardware), so DMX `start_channel + i` maps as:
+///   ch+0 -> output 1 -> pin4 (out3)    ch+1 -> output 2 -> pin3 (out2)
+///   ch+2 -> output 3 -> pin2 (out1)    ch+3 -> output 4 -> pin1 (out0)
 #[embassy_executor::task]
 pub async fn dimmer_slot_b_task(settings: DimmerConfig, r: SlotBDimmerResources) {
     info!("Starting dimmer task (slot B)");
@@ -85,10 +86,10 @@ pub async fn dimmer_slot_b_task(settings: DimmerConfig, r: SlotBDimmerResources)
     loop {
         let lv = resolve_levels(&settings);
 
-        c0.compare_a = lv[0];
-        c1.compare_a = lv[1];
-        c2.compare_b = lv[2];
-        c3.compare_b = lv[3];
+        c3.compare_b = lv[0]; // output 1 / pin4
+        c2.compare_b = lv[1]; // output 2 / pin3
+        c1.compare_a = lv[2]; // output 3 / pin2
+        c0.compare_a = lv[3]; // output 4 / pin1
 
         out0.set_config(&c0);
         out1.set_config(&c1);

@@ -4,14 +4,18 @@ use crate::config::*;
 use crate::hardware::*;
 
 mod dimmer;
+mod fog;
 mod neo;
 
 /**
  * This will eventually use the config for module order but for now its hardcoded, along with the pin assignments and pwm slices and stuff
  */
 
+// Fog relay slot A
 pub fn init_slot_a(spawner: &Spawner, slot_config: ModuleSlot, r: SlotARelayResources) {
-
+    if let ModuleSlot::FogMachine(settings) = slot_config {
+        spawner.spawn(fog::fog_task(settings, r)).unwrap();
+    }
 }
 
 // Dimmer slot B
