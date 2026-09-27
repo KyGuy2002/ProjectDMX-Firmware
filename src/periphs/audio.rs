@@ -33,11 +33,15 @@ const VOICE_MP3_BUF_SIZE: usize = 4 * 1024;
 const VOICE_MP3_BUF_REFILL_THRESHOLD: usize = 2 * 1024;
 
 // Frames per I2S DMA transfer / buffer. While one buffer plays (~FRAMES_PER_BATCH
-// * 26 ms of DMA) the other is refilled, so this is the headroom `fill()` has to
-// decode the next batch and service any SD read latency spike. 8 frames = ~209 ms
-// per buffer, comfortably above the worst-case decode + SD stall. (Startup delay
-// to first audio is dominated by the MP3s' own silent lead-in, not this.)
-const FRAMES_PER_BATCH: usize = 8;
+// * 26 ms of DMA) the others are refilled, so this is the headroom `fill()` has to
+// decode the next batch and service any SD read latency spike.
+//
+// It is also the audio latency: DMX is sampled once per buffer, and a new file
+// can only be heard after the buffers already queued ahead of it play out, so a
+// DMX change takes ~(1..3) * FRAMES_PER_BATCH * 26 ms to be heard. 8 frames made
+// that ~0.2-0.6 s, audibly late against the lights; 2 frames = ~52 ms per
+// buffer, ~50-160 ms latency. Raise it again if "AUDIO underruns" shows up.
+const FRAMES_PER_BATCH: usize = 2;
 const OUT_BUF_LEN: usize = MAX_FRAME_SAMPLES * FRAMES_PER_BATCH;
 
 type OutBuf = [u32; OUT_BUF_LEN];
@@ -157,6 +161,8 @@ struct Voice {
     // than dropped, so reconcile() doesn't see "nothing playing" and restart it
     // every fill. Cleared only by selecting a different file (or 0).
     finished: bool,
+    // Set after the first decoded frame's sample rate has been checked.
+    rate_checked: bool,
 
     // Kept so reads can go through `sd::read_yielding` (needs a handle to hand
     // back to the caller's signature, even though the actual read goes through
@@ -202,6 +208,7 @@ impl Voice {
             mode,
             data_start,
             finished: false,
+            rate_checked: false,
             handle,
             file,
             decoder: Decoder::new(),
@@ -278,6 +285,21 @@ impl Voice {
             if let Some(info) = info {
                 let channels = info.channels.num() as usize;
                 let n = info.samples_produced;
+
+                // Output runs at a fixed AUDIO_SAMPLE_RATE with no resampling, so a
+                // file at any other rate plays at the wrong speed and drifts out of
+                // sync with the lights (48 kHz plays ~9% slow).
+                if !self.rate_checked {
+                    self.rate_checked = true;
+                    if info.sample_rate != AUDIO_SAMPLE_RATE {
+                        println!(
+                            "Audio: file #{} is {} Hz, expected {} Hz - will play at the wrong speed",
+                            self.file_index,
+                            info.sample_rate,
+                            AUDIO_SAMPLE_RATE
+                        );
+                    }
+                }
 
                 if channels > 1 {
                     for i in 0..n {
@@ -368,8 +390,29 @@ async fn fill(
     right_failed_selection: &mut Option<(usize, PlaybackMode)>,
     scratch: &mut [f32; MAX_SAMPLES_PER_FRAME],
     out: &mut [u32; OUT_BUF_LEN],
+    last_dmx: &mut [u8; 3],
 ) {
     let channels = read_channels::<3>(cfg.universe as usize, cfg.start_channel as usize);
+
+    // TEMP latency debug: log every DMX value change with how much already-mixed
+    // audio is queued ahead of this buffer (1 playing + FILLED_CHANNEL.len()
+    // waiting), i.e. roughly how long until this change can be heard.
+    let changed = channels != *last_dmx;
+    let reconcile_start = Instant::now();
+    if changed {
+        let buf_ms = (OUT_BUF_LEN as u64 * 1000) / AUDIO_SAMPLE_RATE as u64;
+        let queued = FILLED_CHANNEL.len() as u64 + 1;
+        println!(
+            "Audio DMX [bg,L,R] {=[u8]} -> {=[u8]} at {}ms, ~{}-{}ms of audio queued ahead",
+            last_dmx[..],
+            channels[..],
+            reconcile_start.as_millis(),
+            (queued - 1) * buf_ms,
+            queued * buf_ms,
+        );
+        *last_dmx = channels;
+    }
+
     reconcile(
         bg_voice,
         bg_failed_selection,
@@ -391,6 +434,10 @@ async fn fill(
         &cfg.right_files,
         channels[2],
     );
+
+    if changed {
+        println!("Audio: file open/seek took {}ms", reconcile_start.elapsed().as_millis());
+    }
 
     let mut pos = 0;
     while pos + MAX_FRAME_SAMPLES <= OUT_BUF_LEN {
@@ -467,6 +514,7 @@ pub async fn audio_decode_task(cfg: AudioConfig, sd_r: SdResources) {
     let mut left_failed_selection: Option<(usize, PlaybackMode)> = None;
     let mut right_failed_selection: Option<(usize, PlaybackMode)> = None;
     let mut scratch = [0f32; MAX_SAMPLES_PER_FRAME];
+    let mut last_dmx = [0u8; 3];
 
     let buf_a = BUF_A.init([0u32; OUT_BUF_LEN]);
     let buf_b = BUF_B.init([0u32; OUT_BUF_LEN]);
@@ -488,6 +536,7 @@ pub async fn audio_decode_task(cfg: AudioConfig, sd_r: SdResources) {
             &mut right_failed_selection,
             &mut scratch,
             buf,
+            &mut last_dmx,
         )
         .await;
         FILLED_CHANNEL.send(buf).await;
