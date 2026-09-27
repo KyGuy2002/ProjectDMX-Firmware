@@ -40,6 +40,17 @@ assign_resources! {
         in5: PIN_45,
         in6: PIN_47,
     },
+    // The 4 buttons on the board, for the OLED menu. Pulled up, LOW = pressed.
+    panel: PanelResources {
+        menu: PIN_33,
+        up: PIN_32,
+        down: PIN_31,
+        enter: PIN_30,
+    },
+    // Menu settings are kept in the last flash sector (see settings.rs).
+    flash: FlashResources {
+        flash: FLASH,
+    },
     remote: RemoteResources {
         data: PIN_28, // 433 MHz receiver data out
         pio: PIO2,

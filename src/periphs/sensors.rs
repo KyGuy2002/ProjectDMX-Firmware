@@ -15,6 +15,7 @@ use crate::config::ButtonConfig;
 use crate::hardware::SensorResources;
 use crate::logic;
 use crate::periphs::mdns;
+use crate::settings;
 
 
 /// `true` while the wired input is triggered. `reversed` is applied when the
@@ -129,18 +130,9 @@ pub fn press_later(button: u8, delay: Duration) {
 }
 
 
-/// `false` stops the wired inputs being read at all (they stay "not
-/// triggered"), so only the remote drives the logic.
-const WIRED_INPUTS_ENABLED: bool = true;
-
 pub fn start_sensors(spawner: &Spawner, r: SensorResources, buttons: [ButtonConfig; 6]) {
     spawner.spawn(logic_task()).unwrap();
     spawner.spawn(fpp_watch_task()).unwrap();
-
-    if !WIRED_INPUTS_ENABLED {
-        info!("Wired inputs disabled (WIRED_INPUTS_ENABLED = false)");
-        return;
-    }
 
     spawner.spawn(sensor_task_1(&BUTTON_1_STATUS, r.in1, buttons[0].reversed)).unwrap();
     spawner.spawn(sensor_task_2(&BUTTON_2_STATUS, r.in2, buttons[1].reversed)).unwrap();
@@ -255,7 +247,9 @@ async fn run_sensor_task<P: Pin>(no: u8, var: &'static AtomicBool, pin: Peri<'st
             previous = pressed;
             var.store(pressed, Ordering::Relaxed);
 
-            if pressed {
+            // Inputs disabled from the menu still show on screen; their
+            // presses just never reach the logic.
+            if pressed && settings::input_enabled(no) {
                 press(no);
             }
         }

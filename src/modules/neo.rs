@@ -14,6 +14,7 @@ use crate::config::*;
 use crate::hardware::{NEO_PROGRAM, NeoIrqs, SlotCNeoResources};
 use crate::pixel_mapping_config::{PixelMeta, get_layout_map};
 use crate::read_channels;
+use crate::settings::{Slot, output_enabled};
 
 mod neo_effects_2d;
 mod tick_neo_effect;
@@ -115,6 +116,11 @@ pub async fn neo_task(settings: NeoConfig, r: SlotCNeoResources) {
         for (i, port) in settings.ports.iter().enumerate() {
             if let Port::Enabled(pc) = *port {
                 generate(pc, &mut states[i], &layout, &mut leds[i]);
+                // Port disabled by the mask mode: keep generating (so effects
+                // don't jump when it comes back) but send black.
+                if !output_enabled(Slot::C, i) {
+                    leds[i].fill(RGBW::default());
+                }
             }
         }
 

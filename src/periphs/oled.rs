@@ -6,6 +6,9 @@ use core::sync::atomic::Ordering;
 use crate::{hardware::{OledIrqs, OledResources}, periphs::sensors::{self, *}};
 use core::fmt::Write;
 use crate::periphs::eth::NET_IDENTITY;
+use crate::periphs::menu::Menu;
+use crate::periphs::panel::KEYS;
+use crate::settings;
 
 
 
@@ -127,19 +130,38 @@ pub async fn oled_task(r: OledResources) {
     let mut frame_no: u32 = 0;
     let mut refresh_page: usize = 0;
 
+    // On-board menu (periphs/menu.rs), drawn into `base` in place of the
+    // status screen while it's open.
+    let mut menu = Menu::new();
+
     loop {
         let frame_start = Instant::now();
 
-        let shows = Shown::now();
-        if base_shows != Some(shows) {
-            base.clear();
-            draw_top_bar(&mut base, text_off);
-            draw_data_mark(&mut base, shows.receiving);
-            draw_cpu_pie(&mut base, shows.cpu);
-            draw_state(&mut base);
-            draw_input_rects(&mut base);
-            draw_remote_rects(&mut base);
-            base_shows = Some(shows);
+        let mut menu_changed = menu.check_timeout();
+        while let Ok(key) = KEYS.try_receive() {
+            menu.handle(key);
+            menu_changed = true;
+        }
+
+        if !menu.is_home() {
+            if menu_changed {
+                base.clear();
+                menu.draw(&mut base);
+                // Redraw the status screen on the way back.
+                base_shows = None;
+            }
+        } else {
+            let shows = Shown::now();
+            if base_shows != Some(shows) {
+                base.clear();
+                draw_top_bar(&mut base, text_off);
+                draw_data_mark(&mut base, shows.receiving);
+                draw_cpu_pie(&mut base, shows.cpu);
+                draw_state(&mut base);
+                draw_input_rects(&mut base);
+                draw_remote_rects(&mut base);
+                base_shows = Some(shows);
+            }
         }
         frame.0 = base.0;
 
@@ -195,6 +217,8 @@ struct Shown {
     state: Option<crate::logic::State>,
     inputs: [bool; 6],
     remotes: [bool; 4],
+    mode: usize,
+    input_mask: u8,
 }
 
 impl Shown {
@@ -206,6 +230,8 @@ impl Shown {
             state: logic_state(),
             inputs: core::array::from_fn(|i| button_active(i as u8 + 1)),
             remotes: sensors::REMOTE_BUTTONS.map(remote_active),
+            mode: settings::mode(),
+            input_mask: settings::input_mask(),
         }
     }
 }
@@ -294,7 +320,8 @@ where
 }
 
 
-/// White bar across the top: hostname (left).
+/// White bar across the top: hostname (left), and the mask mode (right) unless
+/// it's Normal.
 fn draw_top_bar<D>(display: &mut D, text_off: MonoTextStyle<BinaryColor>)
 where
     D: DrawTarget<Color = BinaryColor>,
@@ -316,6 +343,18 @@ where
         }
     }
     Text::new(&host, Point::new(0, TOP_TEXT_Y), text_off).draw(display).ok();
+
+    let mode = settings::mode();
+    if mode != 0 {
+        // Blank a gap first so a long hostname can't run into it.
+        let name = settings::mode_name(mode);
+        let x = 128 - 6 * name.len() as i32;
+        Rectangle::new(Point::new(x - 6, 0), Size::new((128 - x + 6) as u32, TOP_BAR_H as u32))
+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+            .draw(display)
+            .ok();
+        Text::new(name, Point::new(x, TOP_TEXT_Y), text_off).draw(display).ok();
+    }
 }
 
 /// CPU_STALL_PCT as a pie: an outline circle, filled clockwise from 12
@@ -381,7 +420,8 @@ where
 }
 
 /// The 6 wired inputs as rectangles spanning the full width, right above the
-/// slider: filled while triggered, outlined otherwise. Each segment
+/// slider: filled while triggered, outlined otherwise, and struck through when
+/// disabled from the menu (presses ignored). Each segment
 /// leaves its rightmost column blank, which is what forms the 1px divider
 /// between segments (and before the slider).
 fn draw_input_rects<D>(display: &mut D)
@@ -403,6 +443,14 @@ where
             .into_styled(style)
             .draw(display)
             .ok();
+
+        if !settings::input_enabled(i as u8 + 1) {
+            let ink = if triggered { BinaryColor::Off } else { BinaryColor::On };
+            Line::new(Point::new(x0, RECT_Y + RECT_H - 1), Point::new(x0 + w - 1, RECT_Y))
+                .into_styled(PrimitiveStyle::with_stroke(ink, 1))
+                .draw(display)
+                .ok();
+        }
     }
 }
 

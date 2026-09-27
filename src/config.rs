@@ -12,6 +12,10 @@ const MAX_CONFIG_LEN: usize = 10240;
 pub const MAX_AUDIO_FILES: usize = 10;
 pub const MAX_FILENAME_LEN: usize = 128;
 pub const MAX_HOSTNAME_LEN: usize = 64;
+pub const MAX_MODES: usize = 8;
+pub const MAX_MODE_NAME_LEN: usize = 16;
+/// 4 slots x 4 outputs.
+const MAX_MODE_OUTPUTS: usize = 16;
 
 /// Error from parsing or validating a board config document.
 #[derive(Clone, Copy, PartialEq, Debug, defmt::Format)]
@@ -69,6 +73,13 @@ fn validate(config: &BoardInstanceConfig) -> Result<(), ConfigError> {
     }
     if config.audio.start_channel > 510 {
         return Err(ConfigError::Invalid("audio right channel is out of range (expected start_channel <= 510)"));
+    }
+
+    for mode in &config.modes {
+        if mode.name.is_empty() {
+            return Err(ConfigError::Invalid("mode name must not be empty"));
+        }
+        mode_mask(mode)?;
     }
 
     let slots = [
@@ -515,6 +526,41 @@ pub struct FppConfig {
     pub host: String<MAX_HOSTNAME_LEN>,
 }
 
+/// A mask mode, picked from the on-board menu: `disable` lists outputs that are
+/// held off while it's active, as slot letter + physical output number
+/// ("a1", "d3"; slot C's are its neo ports, "c1" = ports[0]). "Normal" (nothing
+/// disabled) is built in and not listed here.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct ModeConfig {
+    pub name: String<MAX_MODE_NAME_LEN>,
+    pub disable: Vec<String<4>, MAX_MODE_OUTPUTS>,
+}
+
+/// Bit for output `id` ("a1".."d4") in a mode's output mask: slot * 4 + output - 1.
+fn output_bit(id: &str) -> Option<u16> {
+    let &[slot, n] = id.as_bytes() else { return None };
+    let slot = match slot.to_ascii_lowercase() {
+        b'a' => 0,
+        b'b' => 1,
+        b'c' => 2,
+        b'd' => 3,
+        _ => return None,
+    };
+    match n {
+        b'1'..=b'4' => Some(1 << (slot * 4 + (n - b'1'))),
+        _ => None,
+    }
+}
+
+/// The outputs `mode` disables, one bit each (see `output_bit`).
+pub fn mode_mask(mode: &ModeConfig) -> Result<u16, ConfigError> {
+    mode.disable.iter().try_fold(0, |mask, id| {
+        output_bit(id)
+            .map(|bit| mask | bit)
+            .ok_or(ConfigError::Invalid("mode disable entry must be a1..d4"))
+    })
+}
+
 /// One of the 6 button/sensor inputs.
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 pub struct ButtonConfig {
@@ -537,4 +583,6 @@ pub struct BoardInstanceConfig {
     pub dmx_output: DmxOutputConfig,
     pub audio: AudioConfig,
     pub modules: ModuleContainer,
+    #[serde(default)]
+    pub modes: Vec<ModeConfig, MAX_MODES>,
 }

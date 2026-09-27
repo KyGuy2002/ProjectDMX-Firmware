@@ -14,6 +14,7 @@ mod hardware;
 mod logic;
 mod modules;
 mod pixel_mapping_config;
+mod settings;
 
 mod periphs {
     pub mod dmx;
@@ -28,6 +29,8 @@ mod periphs {
     pub mod ask433;
     pub mod sd;
     pub mod audio;
+    pub mod panel;
+    pub mod menu;
 }
 
 use core::cell::RefCell;
@@ -198,10 +201,15 @@ async fn main(spawner: Spawner) {
     let config = load_config(None);
     CONFIG.init(config.clone()).unwrap();
 
+    // Menu settings (mask mode, disabled inputs) saved in flash. Before
+    // anything that reads them starts.
+    settings::init(r.flash);
+
 
 
     // Spawn Peripherals
     spawner.spawn(periphs::oled::oled_task(r.oled)).unwrap(); // OLED
+    spawner.spawn(periphs::panel::panel_task(r.panel)).unwrap(); // Menu buttons
     spawner.spawn(periphs::dmx::dmx_task(r.dmx)).unwrap(); // DMX
     spawner.spawn(cpu_monitor_task()).unwrap();
 

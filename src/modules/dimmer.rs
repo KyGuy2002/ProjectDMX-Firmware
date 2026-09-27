@@ -5,13 +5,17 @@ use defmt::info;
 use crate::config::DimmerConfig;
 use crate::hardware::{SlotBDimmerResources, SlotDDimmerResources};
 use crate::read_channels;
+use crate::settings::{Slot, output_enabled};
 
 /// Reads the port's 4 DMX bytes and applies each output's binary flag:
 /// `true` -> full-on above DMX 127 / off below, `false` -> linear passthrough.
-fn resolve_levels(settings: &DimmerConfig) -> [u16; 4] {
+/// Index i is physical output i+1; outputs the mask mode disables read 0.
+fn resolve_levels(slot: Slot, settings: &DimmerConfig) -> [u16; 4] {
     let ch = read_channels::<4>(settings.universe as usize, settings.start_channel as usize);
     core::array::from_fn(|i| {
-        if settings.binary[i] {
+        if !output_enabled(slot, i) {
+            0
+        } else if settings.binary[i] {
             if ch[i] > 127 { 255 } else { 0 }
         } else {
             ch[i] as u16
@@ -41,7 +45,7 @@ pub async fn dimmer_slot_d_task(settings: DimmerConfig, r: SlotDDimmerResources)
     let mut pwm_slice0 = Pwm::new_output_ab(r.pwm0, r.pin4, r.pin3, cfg_slice0.clone());
 
     loop {
-        let lv = resolve_levels(&settings);
+        let lv = resolve_levels(Slot::D, &settings);
 
         cfg_slice0.compare_a = lv[0]; // output 1 / pin4
         cfg_slice0.compare_b = lv[1]; // output 2 / pin3
@@ -84,7 +88,7 @@ pub async fn dimmer_slot_b_task(settings: DimmerConfig, r: SlotBDimmerResources)
     let mut out3 = Pwm::new_output_b(r.pwm4, r.pin4, c3.clone());
 
     loop {
-        let lv = resolve_levels(&settings);
+        let lv = resolve_levels(Slot::B, &settings);
 
         c3.compare_b = lv[0]; // output 1 / pin4
         c2.compare_b = lv[1]; // output 2 / pin3

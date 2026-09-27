@@ -23,7 +23,7 @@
         "start_channel": 10,
         "bg_files": ["idle-bg-2026.mp3", "overload-bg-2026.mp3"],
         "left_files": ["idle-bones-2026.mp3", "startup-bones-2026.mp3", "overload-bones-2026.mp3", "strike-bones-2026.mp3"],
-        "right_files": ["idle-frank-2026.mp3", "startup-frank-2026.mp3", "overload-frank-2026.mp3", "strike-frank-2026.mp3", "wake-frank-2026.mp3"]
+        "right_files": ["idle-frank-2026.mp3", "startup-frank-2026.mp3", "overload-frank-2026.mp3", "wake-frank-2026.mp3"]
     },
     "modules": {
         "slot_a": {
@@ -96,5 +96,15 @@
             // CRT Fog, CRT Solenoid, Meltdown Fog, 12v Glowing Wire
             "binary": [true, true, true, false]
         }
-    }
+    },
+
+    // Mask modes, picked from the on-board menu ("Normal" is built in).
+    // "disable" lists outputs held off while the mode is active: slot letter +
+    // physical output number. Slot C's are its neo ports (c1 = first port).
+    "modes": [
+        // CRT Fog, Meltdown Fog, fog relay
+        { "name": "No Fog", "disable": ["a1", "d1", "d3"] },
+        // Everything but the neo ports and the 12v glowing wire
+        { "name": "Lights Only", "disable": ["a1", "b1", "b2", "b3", "b4", "d1", "d2", "d3"] }
+    ]
 }
