@@ -39,9 +39,9 @@ const OVERLOAD: &str = "overload-2026";
 /// Guests should hit button 2 before this runs out; if not, strike anyway.
 const STARTUP_MS: u64 = 7500;
 const STARTUP: &str = "startup-2026-e";
-/// From the strike effect starting to the overload sequence starting.
-const STRIKE_MS: u64 = 1800;
 const STRIKE: &str = "strike-2026-e";
+/// Plays once alongside the looping overload sequence.
+const OVERLOAD_FX: &str = "overload-fx-2026-e";
 const FRANK: &str = "frank-2026-e";
 /// Frank can't be retriggered within this long of the last time it played.
 const FRANK_COOLDOWN_MS: u32 = 3000;
@@ -86,7 +86,7 @@ pub fn on_button_pressed(button: u8, state: &mut State) {
         2 => {
             if *state == State::Running {
                 fpp::start_effect(STRIKE, false);
-                fpp::wait(Duration::from_millis(STRIKE_MS));
+                fpp::start_effect(OVERLOAD_FX, false);
                 fpp::start_sequence(OVERLOAD, true);
                 *state = State::Overload;
             }
