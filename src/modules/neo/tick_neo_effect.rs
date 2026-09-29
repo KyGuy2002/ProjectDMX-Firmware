@@ -84,7 +84,7 @@ pub fn tick_wire_effect_rgb(
     match state.transition {
         TransitionState::Stable => {
             // Grab master brightness ceiling directly from the active DMX parameter profile
-            let master_intensity = state.active_params.r.max(state.active_params.g).max(state.active_params.b) as u32;
+            let master_intensity = master_intensity(&state.active_params);
 
             for i in 0..port_config.pixel_count {
                 let meta = &layout_table[i];
@@ -107,8 +107,8 @@ pub fn tick_wire_effect_rgb(
             let alpha = ((*progress as u16) * 256) / (duration as u16);
 
             // Dynamically interpolate the master intensity ceiling during a crossfade
-            let old_intensity = old_params.r.max(old_params.g).max(old_params.b) as u32;
-            let new_intensity = state.active_params.r.max(state.active_params.g).max(state.active_params.b) as u32;
+            let old_intensity = master_intensity(&old_params);
+            let new_intensity = master_intensity(&state.active_params);
             let master_intensity = ((old_intensity * (256 - alpha as u32)) + (new_intensity * alpha as u32)) >> 8;
 
             for i in 0..port_config.pixel_count {
@@ -143,6 +143,20 @@ pub fn tick_wire_effect_rgb(
 
 
 
+
+
+
+/// Master brightness ceiling (0..=255) applied on top of the rendered frame.
+/// Only the effects that generate their own colors (rainbows, patriotic) use
+/// the Color1 channels as a dimmer. Effects that draw the DMX colors directly
+/// already carry their brightness, and scaling them by Color1 would black out
+/// Color2 whenever Color1 is 0.
+fn master_intensity(params: &DmxParams) -> u32 {
+    match params.base_effect_id {
+        1 | 2 | 5 => params.r.max(params.g).max(params.b) as u32,
+        _ => 255,
+    }
+}
 
 
 
