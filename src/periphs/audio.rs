@@ -23,7 +23,7 @@ const AUDIO_SAMPLE_RATE: u32 = 44100;
 
 // Playback volume, 0.0 - 1.0. Tweak here. Each file's config `volume` scales
 // on top of this.
-const VOLUME: f32 = 0.3;
+const VOLUME: f32 = 0.6;
 
 // DMX audio channels, in channel order from `start_channel`: background (both
 // speakers), left (Bones), right (Frank), left FX, right FX. The FX voices play

@@ -26,26 +26,24 @@
         // DMX value: 0 = stop, 1..=128 = file (v-1) once, 129..=255 = file (v-129) looped.
         // "volume" is 0..=100 %, on top of the global volume.
         "bg_files": [
-            { "file": "idle-bg-2026.mp3", "volume": 40 },
-            { "file": "overload-bg-2026.mp3", "volume": 40 }
+            { "file": "idle-bg-2026.wav", "volume": 15 },
+            { "file": "overload-bg-2026.wav", "volume": 55 }
         ],
         "left_files": [
-            { "file": "idle-bones-2026.mp3", "volume": 40 },
-            { "file": "startup-bones-2026.mp3", "volume": 80 },
-            { "file": "overload-bones-2026.mp3", "volume": 40 },
-            { "file": "strike-bones-2026.mp3", "volume": 80 }
+            { "file": "idle-bones-2026.wav", "volume": 15 },
+            { "file": "startup-bones-2026.wav", "volume": 40 },
+            { "file": "overload-bones-2026.wav", "volume": 45 }
         ],
         "right_files": [
-            { "file": "idle-frank-2026.mp3", "volume": 40 },
-            { "file": "startup-frank-2026.mp3", "volume": 80 },
-            { "file": "overload-frank-2026.mp3", "volume": 40 },
-            { "file": "wake-frank-2026.mp3", "volume": 80 }
+            { "file": "idle-frank-2026.wav", "volume": 15 },
+            { "file": "startup-frank-2026.wav", "volume": 80 },
+            { "file": "overload-frank-2026.wav", "volume": 45 }
         ],
         "left_fx_files": [
-            { "file": "strike-bones-2026.mp3", "volume": 80 }
+            { "file": "strike-bones-2026.wav", "volume": 80 }
         ],
         "right_fx_files": [
-            { "file": "wake-frank-2026.mp3", "volume": 80 }
+            { "file": "wake-frank-2026.wav", "volume": 90 }
         ]
     },
     "modules": {
