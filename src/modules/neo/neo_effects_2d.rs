@@ -20,6 +20,7 @@ pub fn render_base_effect(
     offset: u8,
     params: &DmxParams,
     meta: &PixelMeta,
+    pixel_count: usize,
 ) -> RGB8 {
     if !meta.is_valid {
         return RGB8::default();
@@ -138,6 +139,19 @@ pub fn render_base_effect(
             }
         }
 
+        // 9: Fill Chase (Wire starts as Color2, fills with Color1 end to end, then resets)
+        //    Overlay channel picks direction: 0..=127 = start -> end, 128..=255 = end -> start
+        9 => {
+            let pos = (meta.index * 256 / pixel_count.max(1)) as u16;
+            let pos = if params.top_effect_id < 128 { pos } else { 255 - pos };
+
+            if pos < offset as u16 {
+                color1 // Filled
+            } else {
+                color2 // Not reached yet
+            }
+        }
+
         // 255: Diagnostic Mode - Light a single pixel by raw index using the speed channel value
         255 => {
             // Use the speed parameter directly as the target pixel index
@@ -161,6 +175,11 @@ pub fn apply_top_effect(
 ) -> RGB8 {
     if !meta.is_valid {
         return RGB8::default();
+    }
+
+    // Fill Chase (base 9) uses the overlay channel as its direction switch
+    if params.base_effect_id == 9 {
+        return bg_color;
     }
 
     // -------------------------------------------------------------

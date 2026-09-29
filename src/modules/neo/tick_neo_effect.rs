@@ -57,8 +57,12 @@ pub fn tick_wire_effect_rgb(
     };
 
 
-    if new_dmx_params.base_effect_id != state.active_params.base_effect_id 
-        || new_dmx_params.top_effect_id != state.active_params.top_effect_id 
+    if new_dmx_params.base_effect_id == 9 && state.active_params.base_effect_id != 9 {
+        // Fill Chase starts from empty the moment it's selected, with no crossfade
+        state.base_offset = 0;
+        state.transition = TransitionState::Stable;
+    } else if new_dmx_params.base_effect_id != state.active_params.base_effect_id
+        || new_dmx_params.top_effect_id != state.active_params.top_effect_id
     {
         state.transition = TransitionState::Crossfading {
             old_params: state.active_params,
@@ -84,7 +88,7 @@ pub fn tick_wire_effect_rgb(
 
             for i in 0..port_config.pixel_count {
                 let meta = &layout_table[i];
-                let base_color = neo_effects_2d::render_base_effect(state.active_params.base_effect_id, state.base_offset, &state.active_params, meta);
+                let base_color = neo_effects_2d::render_base_effect(state.active_params.base_effect_id, state.base_offset, &state.active_params, meta, port_config.pixel_count);
                 let mixed_color = neo_effects_2d::apply_top_effect(state.active_params.top_effect_id, state.top_offset, base_color, meta, &state.active_params);
 
                 if master_intensity > 0 {
@@ -110,10 +114,10 @@ pub fn tick_wire_effect_rgb(
             for i in 0..port_config.pixel_count {
                 let meta = &layout_table[i];
 
-                let old_base = neo_effects_2d::render_base_effect(old_params.base_effect_id, state.base_offset, &old_params, meta);
+                let old_base = neo_effects_2d::render_base_effect(old_params.base_effect_id, state.base_offset, &old_params, meta, port_config.pixel_count);
                 let old_composite = neo_effects_2d::apply_top_effect(old_params.top_effect_id, state.top_offset, old_base, meta, &old_params);
 
-                let new_base = neo_effects_2d::render_base_effect(state.active_params.base_effect_id, state.base_offset, &state.active_params, meta);
+                let new_base = neo_effects_2d::render_base_effect(state.active_params.base_effect_id, state.base_offset, &state.active_params, meta, port_config.pixel_count);
                 let new_composite = neo_effects_2d::apply_top_effect(state.active_params.top_effect_id, state.top_offset, new_base, meta, &state.active_params);
 
                 let mixed_color = neo_effects_2d::blend_rgb(old_composite, new_composite, alpha);
