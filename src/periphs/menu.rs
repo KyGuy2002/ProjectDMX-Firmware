@@ -111,14 +111,11 @@ impl Menu {
                 self.open(Screen::Main, 0);
             }
             Screen::Inputs => {
-                let mask = settings::input_mask();
-                let new = match self.cursor {
+                match self.cursor {
                     // Remote only: all off, or all back on if they already are.
-                    0 if mask == 0x3f => 0,
-                    0 => 0x3f,
-                    n => mask ^ (1 << (n - 1)),
-                };
-                settings::set_input_mask(new);
+                    0 => settings::set_remote_only(!settings::remote_only()),
+                    n => settings::set_input_mask(settings::input_mask() ^ (1 << (n - 1))),
+                }
                 self.changed = true;
             }
         }
@@ -150,7 +147,7 @@ impl Menu {
                 let mark = if m == settings::mode() { '*' } else { ' ' };
                 write!(out, "{} {}", mark, settings::mode_name(m))
             }
-            (Screen::Inputs, 0) => write!(out, "Remote only   {}", on_off(settings::input_mask() == 0x3f)),
+            (Screen::Inputs, 0) => write!(out, "Remote only   {}", on_off(settings::remote_only())),
             (Screen::Inputs, n) => write!(out, "Input {}       {}", n, on_off(settings::input_enabled(n as u8))),
             (Screen::Home, _) => Ok(()),
         };

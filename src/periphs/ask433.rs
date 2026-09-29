@@ -71,6 +71,15 @@ pub async fn ask433_task(r: RemoteResources) {
     // Counts down a scratch register while the pin stays in the current
     // state, then pushes the elapsed count (~1us per count) to the RX FIFO
     // and repeats for the opposite state. Runs forever, alternating.
+    //
+    // x counts down from all-ones, so the elapsed count is ~x. Low pulses push
+    // ~x (the count: top bit clear), high pulses push x itself (the count
+    // inverted: top bit set). Tagging each word with its level matters: the
+    // FIFO overflows whenever this task can't run for a while (a flash erase
+    // stops interrupts for tens of ms, and the receiver's noise never stops),
+    // `push noblock` drops the overflow, and an odd number of drops would
+    // otherwise swap which words are highs and which are lows - for good,
+    // since nothing could tell.
     let prg = pio_asm!(
         ".wrap_target",
         "    wait 0 pin 0",
@@ -88,7 +97,7 @@ pub async fn ask433_task(r: RemoteResources) {
         "    jmp x-- high_test",
         "high_test:",
         "    jmp pin high_loop",
-        "    mov isr, ~x",
+        "    mov isr, x",
         "    push noblock",
         ".wrap",
     );
@@ -109,11 +118,9 @@ pub async fn ask433_task(r: RemoteResources) {
     sm0.set_config(&cfg);
     sm0.set_enable(true);
 
-    // The PIO program always starts by waiting for the line low, so the FIFO
-    // stream is strictly alternating: low, high, low, high, ... Each "bit" is
-    // a (high, low-that-follows-it) pair; the very first low has no
-    // preceding high, so it's discarded.
-    let _ = sm0.rx().wait_pull().await;
+    // Each "bit" is a (high, low-that-follows-it) pair. A low with no high
+    // right before it (the very first one, or after dropped words) is skipped.
+    let mut high: Option<u32> = None;
 
     let mut code: u32 = 0;
     let mut bit_count: u32 = 0;
@@ -123,8 +130,23 @@ pub async fn ask433_task(r: RemoteResources) {
     let mut last: Option<(u32, Instant)> = None;
 
     loop {
-        let high = sm0.rx().wait_pull().await;
-        let low = sm0.rx().wait_pull().await;
+        let word = sm0.rx().wait_pull().await;
+        if word & 0x8000_0000 != 0 {
+            // A second high in a row means a low went missing: this one wins,
+            // and the frame in progress is broken.
+            if high.is_some() {
+                collecting = false;
+            }
+            high = Some(!word);
+            continue;
+        }
+        let low = word;
+        let Some(high) = high.take() else {
+            // A low without its high: words were dropped, so whatever frame
+            // was in progress is broken.
+            collecting = false;
+            continue;
+        };
 
         if high < MIN_PULSE_US || low < MIN_PULSE_US {
             // Noise glitch - drop whatever frame was in progress.

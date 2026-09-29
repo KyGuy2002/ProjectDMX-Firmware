@@ -68,6 +68,17 @@ pub fn set_input_mask(mask: u8) {
     INPUT_MASK.store(mask & 0x3f, Ordering::Relaxed);
 }
 
+/// Remote only = every wired input disabled.
+pub fn remote_only() -> bool {
+    input_mask() == 0x3f
+}
+
+/// Remote only on: all wired inputs off. Off: all of them back on (individual
+/// input settings aren't kept).
+pub fn set_remote_only(on: bool) {
+    set_input_mask(if on { 0x3f } else { 0 });
+}
+
 fn modes() -> &'static [ModeConfig] {
     CONFIG.try_get().map(|c| c.modes.as_slice()).unwrap_or(&[])
 }

@@ -27,10 +27,12 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use defmt::info;
 use embassy_time::{Duration, Instant};
 
 use crate::periphs::fpp;
 use crate::periphs::sensors::press_later;
+use crate::settings;
 
 // Sequences
 const IDLE: &str = "idle-2026";
@@ -87,8 +89,11 @@ pub fn on_button_pressed(button: u8, state: &mut State) {
         // strike and is already running underneath when the strike ends.
         // Startup is stopped in case this came early: left running, it would
         // hold the Bones/Frank audio channels and show through after strike.
+        //
+        // Also works straight from Idle, skipping startup: a backup for when
+        // input 1 missed the guests, so they still get the strike.
         2 => {
-            if *state == State::Running {
+            if matches!(*state, State::Idle | State::Running) {
                 fpp::start_effect(STRIKE, false);
                 fpp::start_sequence(OVERLOAD, true);
                 fpp::stop_effect(STARTUP);
@@ -135,6 +140,14 @@ pub fn on_remote_pressed(button: char, state: &mut State) {
 
         // Frank, during overload only.
         'B' => on_button_pressed(3, state),
+
+        // TEMP: toggles remote only (all wired inputs off), same as the menu's
+        // INPUTS > Remote only. Saved, so it survives a power cycle.
+        'D' => {
+            settings::set_remote_only(!settings::remote_only());
+            settings::save();
+            info!("Logic: remote only {}", if settings::remote_only() { "on" } else { "off" });
+        }
 
         _ => {}
     }
