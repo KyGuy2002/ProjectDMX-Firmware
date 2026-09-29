@@ -2,7 +2,11 @@
 //! `logic.rs`.
 //!
 //! The helpers below queue a command and return immediately; `fpp_task` sends
-//! them in order, one GET per connection. A command that can't reach FPP (name
+//! them, one GET per connection. Commands queued back-to-back (e.g. in one
+//! button handler) are sent at the same time, each on its own connection, so
+//! they all start together instead of each waiting ~300ms for FPP to answer the
+//! one before it. `wait()` between two commands keeps them in order. A
+//! command that can't reach FPP (name
 //! not found over mDNS, connect or write failed) or that FPP answers with a 5xx
 //! (it returns 503 briefly while starting up) is retried every 100ms until it
 //! gets through, and presses made while it's down replay in order. A 4xx is
@@ -10,13 +14,15 @@
 //!
 //! Sequence and effect names are the file name without `.fseq`.
 
+use core::cell::Cell;
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use defmt::{info, warn};
 use embassy_net::{IpAddress, IpEndpoint, Ipv4Address, Stack, tcp::TcpSocket};
 use embassy_sync::{blocking_mutex::raw::ThreadModeRawMutex, channel::Channel};
-use embassy_time::{Duration, Timer, with_timeout};
+use embassy_futures::join::join4;
+use embassy_time::{Duration, Instant, Timer, with_timeout};
 use heapless::String;
 
 use crate::config::MAX_HOSTNAME_LEN;
@@ -60,7 +66,8 @@ pub fn stop_all_effects() {
 }
 
 /// Holds back the commands queued after this one for `delay`, counted from
-/// when FPP accepted the command before it.
+/// when FPP accepted the commands before it. Also splits them into separate
+/// batches, so `wait(Duration::from_millis(0))` just forces ordering.
 pub fn wait(delay: Duration) {
     if COMMANDS.try_send(Command::Wait(delay)).is_err() {
         warn!("FPP: command queue full, wait dropped");
@@ -107,6 +114,9 @@ pub fn fpp_status() -> FppStatus {
 // -------------------------------------------------------------------------
 
 const FPP_PORT: u16 = 80;
+/// Most commands sent to FPP at once. Each needs its own TCP socket (see
+/// `StackResources` in eth.rs); commands past this go in the next batch.
+pub const MAX_PARALLEL: usize = 4;
 /// Between attempts at a command FPP couldn't take: unreachable, or a 5xx
 /// (FPP answers 503 for a moment while it starts up).
 const RETRY_DELAY: Duration = Duration::from_millis(100);
@@ -140,15 +150,23 @@ fn queue(args: fmt::Arguments) {
 
 #[embassy_executor::task]
 pub async fn fpp_task(stack: Stack<'static>, host: String<MAX_HOSTNAME_LEN>) -> ! {
-    let mut rx_buffer = [0u8; 512];
-    let mut tx_buffer = [0u8; 512];
+    let mut rx_buffers = [[0u8; 512]; MAX_PARALLEL];
+    let mut tx_buffers = [[0u8; 512]; MAX_PARALLEL];
 
     // Looked up again after any connection failure, in case FPP came back at a
-    // different link-local address.
-    let mut ip: Option<Ipv4Address> = None;
+    // different link-local address. Shared by the commands in a batch.
+    let ip: Cell<Option<Ipv4Address>> = Cell::new(None);
+
+    // A command received while filling a batch that has to wait for the next
+    // one (a `wait()`, or one past MAX_PARALLEL).
+    let mut held: Option<Command> = None;
 
     loop {
-        let path = match COMMANDS.receive().await {
+        let first = match held.take() {
+            Some(command) => command,
+            None => COMMANDS.receive().await,
+        };
+        let first = match first {
             Command::Get(path) => path,
             Command::Wait(delay) => {
                 Timer::after(delay).await;
@@ -156,63 +174,109 @@ pub async fn fpp_task(stack: Stack<'static>, host: String<MAX_HOSTNAME_LEN>) -> 
             }
         };
 
-        // Only the first failure is logged; retries run 10x a second.
-        let mut attempts: u32 = 0;
-        let mut conn_failures: u32 = 0;
-
-        loop {
-            attempts += 1;
-
-            let addr = match ip {
-                Some(addr) => addr,
-                None => match lookup(&host).await {
-                    Some(addr) => *ip.insert(addr),
-                    None => {
-                        if attempts == 1 {
-                            warn!("FPP: no answer for {}. Retrying...", host.as_str());
-                        }
-                        set_status(FppStatus::NoHost);
-                        Timer::after(RETRY_DELAY).await;
-                        continue;
-                    }
-                },
-            };
-
-            match get(stack, &mut rx_buffer, &mut tx_buffer, addr, &host, &path).await {
-                Ok(code) if (200..300).contains(&code) => {
-                    if attempts == 1 {
-                        info!("FPP: {} -> {}", path.as_str(), code);
-                    } else {
-                        info!("FPP: {} -> {} (after {} attempts)", path.as_str(), code, attempts);
-                    }
-                    set_status(FppStatus::Online);
+        // Everything already queued behind it goes out at the same time.
+        let mut batch: [Option<Path>; MAX_PARALLEL] = Default::default();
+        batch[0] = Some(first);
+        for slot in batch.iter_mut().skip(1) {
+            match COMMANDS.try_receive() {
+                Ok(Command::Get(path)) => *slot = Some(path),
+                Ok(wait) => {
+                    held = Some(wait);
                     break;
                 }
-                // Busy or still starting - try again.
-                Ok(code) if code >= 500 => {
+                Err(_) => break,
+            }
+        }
+
+        let queued_at = Instant::now();
+        let [b0, b1, b2, b3] = &batch;
+        let [r0, r1, r2, r3] = &mut rx_buffers;
+        let [t0, t1, t2, t3] = &mut tx_buffers;
+        join4(
+            send(stack, r0, t0, &ip, &host, b0.as_ref(), queued_at),
+            send(stack, r1, t1, &ip, &host, b1.as_ref(), queued_at),
+            send(stack, r2, t2, &ip, &host, b2.as_ref(), queued_at),
+            send(stack, r3, t3, &ip, &host, b3.as_ref(), queued_at),
+        )
+        .await;
+    }
+}
+
+/// Sends one command, retrying until FPP accepts or rejects it. `None` is an
+/// empty batch slot and returns straight away.
+async fn send(
+    stack: Stack<'static>,
+    rx_buffer: &mut [u8],
+    tx_buffer: &mut [u8],
+    ip: &Cell<Option<Ipv4Address>>,
+    host: &str,
+    path: Option<&Path>,
+    queued_at: Instant,
+) {
+    let Some(path) = path else {
+        return;
+    };
+
+    // Only the first failure is logged; retries run 10x a second.
+    let mut attempts: u32 = 0;
+    let mut conn_failures: u32 = 0;
+
+    loop {
+        attempts += 1;
+
+        let addr = match ip.get() {
+            Some(addr) => addr,
+            None => match lookup(host).await {
+                Some(addr) => {
+                    ip.set(Some(addr));
+                    addr
+                }
+                None => {
                     if attempts == 1 {
-                        warn!("FPP: {} -> {}. Retrying...", path.as_str(), code);
+                        warn!("FPP: no answer for {}. Retrying...", host);
                     }
+                    set_status(FppStatus::NoHost);
                     Timer::after(RETRY_DELAY).await;
+                    continue;
                 }
-                // 4xx: the command itself is wrong (e.g. a misspelled name).
-                // Retrying can't fix it and would hold up every command behind it.
-                Ok(code) => {
-                    warn!("FPP: {} -> {} (rejected, not retrying)", path.as_str(), code);
-                    set_status(FppStatus::Rejected);
-                    break;
+            },
+        };
+
+        match get(stack, rx_buffer, tx_buffer, addr, host, path).await {
+            Ok(code) if (200..300).contains(&code) => {
+                let ms = queued_at.elapsed().as_millis();
+                if attempts == 1 {
+                    info!("FPP: {} -> {} in {}ms", path.as_str(), code, ms);
+                } else {
+                    info!("FPP: {} -> {} in {}ms (after {} attempts)", path.as_str(), code, ms, attempts);
                 }
-                Err(()) => {
-                    if attempts == 1 {
-                        warn!("FPP: {} failed to reach {}. Retrying...", path.as_str(), addr);
-                    }
-                    set_status(FppStatus::NoConn);
-                    conn_failures += 1;
-                    if conn_failures % RELOOKUP_AFTER == 0 {
-                        ip = None;
-                    }
-                    Timer::after(RETRY_DELAY).await;
+                set_status(FppStatus::Online);
+                return;
+            }
+            // Busy or still starting - try again.
+            Ok(code) if code >= 500 => {
+                if attempts == 1 {
+                    warn!("FPP: {} -> {}. Retrying...", path.as_str(), code);
                 }
+                Timer::after(RETRY_DELAY).await;
+            }
+            // 4xx: the command itself is wrong (e.g. a misspelled name).
+            // Retrying can't fix it and would hold up every command behind it.
+            Ok(code) => {
+                warn!("FPP: {} -> {} (rejected, not retrying)", path.as_str(), code);
+                set_status(FppStatus::Rejected);
+                return;
+            }
+            Err(()) => {
+                if attempts == 1 {
+                    warn!("FPP: {} failed to reach {}. Retrying...", path.as_str(), addr);
+                }
+                set_status(FppStatus::NoConn);
+                conn_failures += 1;
+                if conn_failures % RELOOKUP_AFTER == 0 {
+                    ip.set(None);
+                }
+                Timer::after(RETRY_DELAY).await;
             }
         }
     }

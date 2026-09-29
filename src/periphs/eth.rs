@@ -166,7 +166,10 @@ pub async fn start_eth(
 
     spawner.spawn(eth_task(eth_runner)).unwrap();
 
-    static NET_RESOURCES: StaticCell<StackResources<6>> = StaticCell::new();
+    // Sockets: Art-Net, sACN, mDNS, 2x HTTP server, and up to
+    // fpp::MAX_PARALLEL FPP commands in flight at once.
+    static NET_RESOURCES: StaticCell<StackResources<{ 5 + crate::periphs::fpp::MAX_PARALLEL }>> =
+        StaticCell::new();
 
     // Randomizes TCP ephemeral ports / sequence numbers per board.
     let seed = chip_id;

@@ -1,3 +1,5 @@
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use defmt::println;
 
 use embassy_futures::yield_now;
@@ -11,7 +13,7 @@ use embedded_sdmmc::Mode;
 use nanomp3::{Decoder, MAX_SAMPLES_PER_FRAME};
 use static_cell::StaticCell;
 
-use crate::config::AudioConfig;
+use crate::config::{AudioConfig, AudioFile};
 use crate::hardware::{AudioIrqs, AudioResources, SdResources};
 use crate::periphs::sd::{self, SdFile, SdHandle};
 use crate::read_channels;
@@ -19,8 +21,33 @@ use crate::read_channels;
 // All source MP3s are expected at this rate - no resampling is done.
 const AUDIO_SAMPLE_RATE: u32 = 44100;
 
-// Playback volume, 0.0 - 1.0. Tweak here.
+// Playback volume, 0.0 - 1.0. Tweak here. Each file's config `volume` scales
+// on top of this.
 const VOLUME: f32 = 0.3;
+
+// DMX audio channels, in channel order from `start_channel`: background (both
+// speakers), left (Bones), right (Frank), left FX, right FX. The FX voices play
+// on top of their side's track so a jumpscare doesn't interrupt (and desync) it.
+const VOICE_COUNT: usize = 5;
+const BG: usize = 0;
+const LEFT: usize = 1;
+const RIGHT: usize = 2;
+const LEFT_FX: usize = 3;
+const RIGHT_FX: usize = 4;
+
+/// Which speakers each voice feeds: (left, right).
+const ROUTING: [(bool, bool); VOICE_COUNT] = [
+    (true, true),  // bg
+    (true, false), // left
+    (false, true), // right
+    (true, false), // left FX
+    (false, true), // right FX
+];
+
+// Gain on a side's track (left/right) while that side's FX voice is playing.
+// 1.0 = keep it at full volume underneath, 0.0 = mute it. It keeps playing
+// (and stays in sync) either way.
+const FX_DUCK: f32 = 1.0;
 
 // nanomp3 decodes interleaved; MAX_SAMPLES_PER_FRAME counts individual samples,
 // so a mono frame is at most half that many.
@@ -76,6 +103,66 @@ fn i2s_underran() -> bool {
 
 fn clear_i2s_underrun() {
     pac::PIO1.fdebug().write(|w| w.set_txstall(I2S_SM_MASK));
+}
+
+/// Running total of microseconds spent inside `Decoder::decode`. Wraps; readers
+/// diff two snapshots. Only the decode task decodes, so a diff around one
+/// voice's `produce()` is exactly that voice's decode time.
+static DECODE_US: AtomicU32 = AtomicU32::new(0);
+
+/// How often the audio CPU log prints.
+const CPU_LOG_WINDOW_US: u64 = 2_000_000;
+
+/// Per-voice decode and SD read time over one log window. Both are CPU-busy
+/// time: the SD SPI is blocking, so the core spins for the whole transfer.
+struct CpuStats {
+    window_start: Instant,
+    decode_us: [u32; VOICE_COUNT],
+    sd_us: [u32; VOICE_COUNT],
+}
+
+impl CpuStats {
+    fn new() -> Self {
+        Self { window_start: Instant::now(), decode_us: [0; VOICE_COUNT], sd_us: [0; VOICE_COUNT] }
+    }
+
+    fn snapshot() -> (u32, u32) {
+        (DECODE_US.load(Ordering::Relaxed), sd::SD_READ_US.load(Ordering::Relaxed))
+    }
+
+    /// Charges everything since `before` (from `snapshot()`) to `voice`.
+    fn charge(&mut self, voice: usize, before: (u32, u32)) {
+        let (decode, sd) = Self::snapshot();
+        self.decode_us[voice] = self.decode_us[voice].wrapping_add(decode.wrapping_sub(before.0));
+        self.sd_us[voice] = self.sd_us[voice].wrapping_add(sd.wrapping_sub(before.1));
+    }
+
+    /// Prints and resets once per window. Percentages are of wall time, so the
+    /// total is the share of the core the audio pipeline is eating.
+    fn maybe_report(&mut self) {
+        let window_us = self.window_start.elapsed().as_micros();
+        if window_us < CPU_LOG_WINDOW_US {
+            return;
+        }
+
+        let pct = |us: u32| (us as u64 * 1000 / window_us) as u32; // tenths of a percent
+        let total: u32 = self.decode_us.iter().chain(self.sd_us.iter()).sum();
+
+        let d = |v: usize| pct(self.decode_us[v]);
+        let r = |v: usize| pct(self.sd_us[v]);
+        println!(
+            "AUDIO CPU ({}ms): bg dec {}.{}% sd {}.{}% | L dec {}.{}% sd {}.{}% | R dec {}.{}% sd {}.{}% | Lfx dec {}.{}% sd {}.{}% | Rfx dec {}.{}% sd {}.{}% | total {}.{}%",
+            window_us / 1000,
+            d(BG) / 10, d(BG) % 10, r(BG) / 10, r(BG) % 10,
+            d(LEFT) / 10, d(LEFT) % 10, r(LEFT) / 10, r(LEFT) % 10,
+            d(RIGHT) / 10, d(RIGHT) % 10, r(RIGHT) / 10, r(RIGHT) % 10,
+            d(LEFT_FX) / 10, d(LEFT_FX) % 10, r(LEFT_FX) / 10, r(LEFT_FX) % 10,
+            d(RIGHT_FX) / 10, d(RIGHT_FX) % 10, r(RIGHT_FX) / 10, r(RIGHT_FX) % 10,
+            pct(total) / 10, pct(total) % 10,
+        );
+
+        *self = Self::new();
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -151,25 +238,189 @@ fn id3v2_data_start(file: &mut SdFile<'static>) -> u32 {
     total
 }
 
+// ---------------------------------------------------------------------------
+// IMA ADPCM (.wav)
+// ---------------------------------------------------------------------------
+//
+// 4 bits per sample (~22 KB/s mono at 44.1 kHz, vs ~16 KB/s for a 128 kbps
+// MP3), decoded with a table lookup and a few adds per sample - next to free
+// compared to MP3 decoding. Make files with:
+//   ffmpeg -i in.mp3 -ac 1 -ar 44100 -c:a adpcm_ima_wav out.wav
+//
+// The data is a run of `block_align`-byte blocks. Each block starts with a
+// 4-byte header (first sample as i16 LE, step index, reserved), then 2 samples
+// per byte, low nibble first.
+
+const IMA_STEP_TABLE: [i32; 89] = [
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+    50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230,
+    253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963,
+    1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327,
+    3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442,
+    11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794,
+    32767,
+];
+
+const IMA_INDEX_TABLE: [i32; 16] = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
+
+// Data bytes decoded per `decode_next_frame` call: 2 samples each, plus a
+// possible block-header sample, must fit in `carry`.
+const ADPCM_CHUNK_BYTES: usize = (MAX_FRAME_SAMPLES - 1) / 2;
+
+// Largest block accepted: a whole block header plus data always fits in the
+// voice buffer after a refill.
+const ADPCM_MAX_BLOCK_ALIGN: usize = VOICE_MP3_BUF_REFILL_THRESHOLD;
+
+struct Adpcm {
+    block_align: usize,
+    // Size of the data chunk, and how much of it hasn't been consumed yet this
+    // pass through the file. Bytes past the data chunk (trailing metadata) are
+    // never decoded.
+    data_len: u32,
+    data_left: u32,
+    // Data bytes left in the current block; 0 = next byte starts a block header.
+    block_left: usize,
+    predictor: i32,
+    step_index: i32,
+}
+
+impl Adpcm {
+    fn sample(&mut self, nibble: u8) -> f32 {
+        let step = IMA_STEP_TABLE[self.step_index as usize];
+        let mut diff = step >> 3;
+        if nibble & 4 != 0 {
+            diff += step;
+        }
+        if nibble & 2 != 0 {
+            diff += step >> 1;
+        }
+        if nibble & 1 != 0 {
+            diff += step >> 2;
+        }
+        if nibble & 8 != 0 {
+            self.predictor -= diff;
+        } else {
+            self.predictor += diff;
+        }
+        self.predictor = self.predictor.clamp(-32768, 32767);
+        self.step_index = (self.step_index + IMA_INDEX_TABLE[nibble as usize]).clamp(0, 88);
+        self.predictor as f32 / 32768.0
+    }
+}
+
+struct WavInfo {
+    data_start: u32,
+    data_len: u32,
+    block_align: usize,
+    sample_rate: u32,
+}
+
+/// Fills `buf` from the file; `false` if the file ended first.
+fn read_exact(file: &mut SdFile<'static>, buf: &mut [u8]) -> bool {
+    let mut read = 0;
+    while read < buf.len() {
+        match file.read(&mut buf[read..]) {
+            Ok(0) | Err(_) => return false,
+            Ok(n) => read += n,
+        }
+    }
+    true
+}
+
+/// Walks the RIFF chunks of a .wav and returns where its IMA ADPCM data is.
+/// Only mono IMA ADPCM is accepted (see the ffmpeg line above).
+fn parse_ima_wav(file: &mut SdFile<'static>) -> Result<WavInfo, &'static str> {
+    let mut riff = [0u8; 12];
+    if !read_exact(file, &mut riff) || &riff[..4] != b"RIFF" || &riff[8..] != b"WAVE" {
+        return Err("not a RIFF/WAVE file");
+    }
+
+    let file_len = file.length();
+    let mut pos: u32 = 12;
+    let mut fmt: Option<(u16, u16, u32, u16)> = None; // format, channels, rate, block_align
+
+    loop {
+        let mut chunk = [0u8; 8];
+        if !read_exact(file, &mut chunk) {
+            return Err("no data chunk");
+        }
+        let size = u32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+        pos += 8;
+
+        if &chunk[..4] == b"fmt " {
+            let mut f = [0u8; 16];
+            if size < 16 || !read_exact(file, &mut f) {
+                return Err("bad fmt chunk");
+            }
+            fmt = Some((
+                u16::from_le_bytes([f[0], f[1]]),
+                u16::from_le_bytes([f[2], f[3]]),
+                u32::from_le_bytes([f[4], f[5], f[6], f[7]]),
+                u16::from_le_bytes([f[12], f[13]]),
+            ));
+        } else if &chunk[..4] == b"data" {
+            let Some((format, channels, sample_rate, block_align)) = fmt else {
+                return Err("data chunk before fmt chunk");
+            };
+            if format != 0x11 {
+                return Err("not IMA ADPCM (re-encode with -c:a adpcm_ima_wav)");
+            }
+            if channels != 1 {
+                return Err("not mono (re-encode with -ac 1)");
+            }
+            let block_align = block_align as usize;
+            if !(5..=ADPCM_MAX_BLOCK_ALIGN).contains(&block_align) {
+                return Err("unsupported ADPCM block size");
+            }
+            return Ok(WavInfo {
+                data_start: pos,
+                data_len: size.min(file_len.saturating_sub(pos)),
+                block_align,
+                sample_rate,
+            });
+        }
+
+        // Chunks are padded to an even length.
+        pos = pos.saturating_add(size).saturating_add(size & 1);
+        if pos >= file_len || file.seek_from_start(pos).is_err() {
+            return Err("no data chunk");
+        }
+    }
+}
+
+enum Codec {
+    Mp3(Decoder),
+    Adpcm(Adpcm),
+}
+
+fn is_wav(filename: &str) -> bool {
+    let bytes = filename.as_bytes();
+    bytes.len() >= 4 && bytes[bytes.len() - 4..].eq_ignore_ascii_case(b".wav")
+}
+
 struct Voice {
     file_index: usize,
     mode: PlaybackMode,
-    // Offset of the first audio byte (past any ID3v2 tag). Loop-rewinds seek here
-    // rather than to 0 so the tag is only ever scanned past once.
+    // Offset of the first audio byte (past any ID3v2 tag, or the start of a
+    // .wav's data chunk). Loop-rewinds seek here.
     data_start: u32,
     // Set once a one-shot plays through to EOF. The voice is kept (silent) rather
     // than dropped, so reconcile() doesn't see "nothing playing" and restart it
     // every fill. Cleared only by selecting a different file (or 0).
     finished: bool,
-    // Set after the first decoded frame's sample rate has been checked.
+    // Set after the sample rate has been checked (first MP3 frame, or the .wav
+    // header).
     rate_checked: bool,
+    // The file's config volume, 0.0..=1.0.
+    gain: f32,
 
     // Kept so reads can go through `sd::read_yielding` (needs a handle to hand
     // back to the caller's signature, even though the actual read goes through
     // `file`'s own volume-manager reference).
     handle: SdHandle,
     file: SdFile<'static>,
-    decoder: Decoder,
+    codec: Codec,
+    // Undecoded file bytes (MP3 or ADPCM).
     mp3_buf: [u8; VOICE_MP3_BUF_SIZE],
     buf_len: usize,
 
@@ -184,8 +435,9 @@ impl Voice {
         handle: SdHandle,
         file_index: usize,
         mode: PlaybackMode,
-        filename: &str,
+        audio_file: &AudioFile,
     ) -> Option<Voice> {
+        let filename = audio_file.file.as_str();
         let mut file = match sd::open_file(handle, filename, Mode::ReadOnly) {
             Ok(f) => f,
             Err(error) => {
@@ -198,7 +450,35 @@ impl Voice {
             }
         };
 
-        let data_start = id3v2_data_start(&mut file);
+        let (data_start, codec, rate_checked) = if is_wav(filename) {
+            let info = match parse_ima_wav(&mut file) {
+                Ok(info) => info,
+                Err(reason) => {
+                    println!("Audio: can't play {}: {}", filename, reason);
+                    return None;
+                }
+            };
+            if info.sample_rate != AUDIO_SAMPLE_RATE {
+                println!(
+                    "Audio: {} is {} Hz, expected {} Hz - will play at the wrong speed",
+                    filename,
+                    info.sample_rate,
+                    AUDIO_SAMPLE_RATE
+                );
+            }
+            let adpcm = Adpcm {
+                block_align: info.block_align,
+                data_len: info.data_len,
+                data_left: info.data_len,
+                block_left: 0,
+                predictor: 0,
+                step_index: 0,
+            };
+            (info.data_start, Codec::Adpcm(adpcm), true)
+        } else {
+            (id3v2_data_start(&mut file), Codec::Mp3(Decoder::new()), false)
+        };
+
         if file.seek_from_start(data_start).is_err() {
             let _ = file.seek_from_start(0);
         }
@@ -208,10 +488,11 @@ impl Voice {
             mode,
             data_start,
             finished: false,
-            rate_checked: false,
+            rate_checked,
+            gain: audio_file.volume.min(100) as f32 / 100.0,
             handle,
             file,
-            decoder: Decoder::new(),
+            codec,
             mp3_buf: [0u8; VOICE_MP3_BUF_SIZE],
             buf_len: 0,
             carry: [0f32; MAX_FRAME_SAMPLES],
@@ -220,10 +501,98 @@ impl Voice {
         })
     }
 
-    /// Decodes the next MP3 frame into `self.carry` as mono (downmixing a stereo
-    /// source). Loops back to the start of the file at EOF when `self.looping`.
-    /// Returns `false` once there is genuinely no more audio (one-shot EOF).
+    /// Decodes the next run of samples into `self.carry` as mono. Loops back to
+    /// the start of the audio at EOF when the mode loops. Returns `false` once
+    /// there is genuinely no more audio (one-shot EOF).
     async fn decode_next_frame(&mut self, scratch: &mut [f32; MAX_SAMPLES_PER_FRAME]) -> bool {
+        match self.codec {
+            Codec::Mp3(_) => self.decode_mp3_frame(scratch).await,
+            Codec::Adpcm(_) => self.decode_adpcm_chunk().await,
+        }
+    }
+
+    /// Decodes up to `ADPCM_CHUNK_BYTES` of IMA ADPCM into `self.carry`.
+    async fn decode_adpcm_chunk(&mut self) -> bool {
+        let mut rewound = false;
+        let mut eof = false;
+
+        loop {
+            let Codec::Adpcm(adpcm) = &mut self.codec else {
+                return false;
+            };
+
+            if adpcm.data_left == 0 {
+                if self.mode.loops() && !rewound {
+                    if self.file.seek_from_start(self.data_start).is_err() {
+                        return false;
+                    }
+                    self.buf_len = 0;
+                    adpcm.data_left = adpcm.data_len;
+                    adpcm.block_left = 0;
+                    rewound = true;
+                    eof = false;
+                    continue;
+                }
+                return false;
+            }
+
+            if !eof && self.buf_len < VOICE_MP3_BUF_REFILL_THRESHOLD {
+                match sd::read_yielding(self.handle, &mut self.file, &mut self.mp3_buf[self.buf_len..]).await {
+                    Ok(0) | Err(_) => eof = true,
+                    Ok(n) => self.buf_len += n,
+                }
+            }
+
+            let avail = self.buf_len.min(adpcm.data_left as usize);
+            let mut n = 0;
+            let mut consumed = 0;
+
+            if adpcm.block_left == 0 {
+                if avail < 4 {
+                    // Truncated file, or a trailing block too short to hold
+                    // any samples: done.
+                    if eof || avail == adpcm.data_left as usize {
+                        adpcm.data_left = 0;
+                    }
+                    continue;
+                }
+                let first = i16::from_le_bytes([self.mp3_buf[0], self.mp3_buf[1]]);
+                adpcm.predictor = first as i32;
+                adpcm.step_index = (self.mp3_buf[2] as i32).clamp(0, 88);
+                adpcm.block_left = (adpcm.block_align - 4).min(adpcm.data_left as usize - 4);
+                self.carry[0] = first as f32 / 32768.0;
+                n = 1;
+                consumed = 4;
+            }
+
+            let take = adpcm.block_left.min(avail - consumed).min(ADPCM_CHUNK_BYTES);
+            for &byte in &self.mp3_buf[consumed..consumed + take] {
+                self.carry[n] = adpcm.sample(byte & 0x0F);
+                self.carry[n + 1] = adpcm.sample(byte >> 4);
+                n += 2;
+            }
+            consumed += take;
+            adpcm.block_left -= take;
+            adpcm.data_left -= consumed as u32;
+
+            self.mp3_buf.copy_within(consumed..self.buf_len, 0);
+            self.buf_len -= consumed;
+
+            if n > 0 {
+                self.carry_len = n;
+                self.carry_pos = 0;
+                return true;
+            }
+            if eof {
+                // Data chunk claims more bytes than the file has.
+                adpcm.data_left = 0;
+            }
+        }
+    }
+
+    /// Decodes the next MP3 frame into `self.carry` as mono (downmixing a stereo
+    /// source).
+    async fn decode_mp3_frame(&mut self, scratch: &mut [f32; MAX_SAMPLES_PER_FRAME]) -> bool {
         let mut eof = false;
         let mut rewound = false;
 
@@ -251,7 +620,12 @@ impl Voice {
                 continue;
             }
 
-            let (mut consumed, info) = self.decoder.decode(&self.mp3_buf[..self.buf_len], scratch);
+            let decode_start = Instant::now();
+            let Codec::Mp3(decoder) = &mut self.codec else {
+                return false;
+            };
+            let (mut consumed, info) = decoder.decode(&self.mp3_buf[..self.buf_len], scratch);
+            DECODE_US.fetch_add(decode_start.elapsed().as_micros() as u32, Ordering::Relaxed);
 
             if consumed == 0 && info.is_none() {
                 if eof || self.buf_len >= VOICE_MP3_BUF_SIZE {
@@ -351,7 +725,7 @@ fn reconcile(
     voice: &mut Option<Voice>,
     failed_selection: &mut Option<(usize, PlaybackMode)>,
     handle: SdHandle,
-    files: &[heapless::String<{ crate::config::MAX_FILENAME_LEN }>],
+    files: &[AudioFile],
     dmx: u8,
 ) {
     match decode_value(dmx, files.len()) {
@@ -368,31 +742,27 @@ fn reconcile(
                 *failed_selection = None;
             } else if *failed_selection != Some((idx, mode)) {
                 let _ = voice.take();
-                *voice = Voice::start(handle, idx, mode, files[idx].as_str());
+                *voice = Voice::start(handle, idx, mode, &files[idx]);
                 *failed_selection = voice.is_none().then_some((idx, mode));
             }
         }
     }
 }
 
-/// Reads all three DMX channels, reconciles each voice independently, and
-/// renders a full stereo `out` buffer. `bg_voice` is mixed into both outputs;
-/// `left_voice`/`right_voice` are routed to their own output only. Yields once
-/// per frame.
+/// Reads the audio DMX channels, reconciles each voice independently, and
+/// renders a full stereo `out` buffer, routing each voice per `ROUTING`.
+/// Yields after each voice's frame.
 async fn fill(
     cfg: &AudioConfig,
     handle: SdHandle,
-    bg_voice: &mut Option<Voice>,
-    left_voice: &mut Option<Voice>,
-    right_voice: &mut Option<Voice>,
-    bg_failed_selection: &mut Option<(usize, PlaybackMode)>,
-    left_failed_selection: &mut Option<(usize, PlaybackMode)>,
-    right_failed_selection: &mut Option<(usize, PlaybackMode)>,
+    voices: &mut [Option<Voice>; VOICE_COUNT],
+    failed_selections: &mut [Option<(usize, PlaybackMode)>; VOICE_COUNT],
     scratch: &mut [f32; MAX_SAMPLES_PER_FRAME],
     out: &mut [u32; OUT_BUF_LEN],
-    last_dmx: &mut [u8; 3],
+    last_dmx: &mut [u8; VOICE_COUNT],
+    stats: &mut CpuStats,
 ) {
-    let channels = read_channels::<3>(cfg.universe as usize, cfg.start_channel as usize);
+    let channels = read_channels::<VOICE_COUNT>(cfg.universe as usize, cfg.start_channel as usize);
 
     // TEMP latency debug: log every DMX value change with how much already-mixed
     // audio is queued ahead of this buffer (1 playing + FILLED_CHANNEL.len()
@@ -403,7 +773,7 @@ async fn fill(
         let buf_ms = (OUT_BUF_LEN as u64 * 1000) / AUDIO_SAMPLE_RATE as u64;
         let queued = FILLED_CHANNEL.len() as u64 + 1;
         println!(
-            "Audio DMX [bg,L,R] {=[u8]} -> {=[u8]} at {}ms, ~{}-{}ms of audio queued ahead",
+            "Audio DMX [bg,L,R,Lfx,Rfx] {=[u8]} -> {=[u8]} at {}ms, ~{}-{}ms of audio queued ahead",
             last_dmx[..],
             channels[..],
             reconcile_start.as_millis(),
@@ -413,84 +783,79 @@ async fn fill(
         *last_dmx = channels;
     }
 
-    reconcile(
-        bg_voice,
-        bg_failed_selection,
-        handle,
+    let file_lists = [
         &cfg.bg_files,
-        channels[0],
-    );
-    reconcile(
-        left_voice,
-        left_failed_selection,
-        handle,
         &cfg.left_files,
-        channels[1],
-    );
-    reconcile(
-        right_voice,
-        right_failed_selection,
-        handle,
         &cfg.right_files,
-        channels[2],
-    );
+        &cfg.left_fx_files,
+        &cfg.right_fx_files,
+    ];
+    for v in 0..VOICE_COUNT {
+        reconcile(&mut voices[v], &mut failed_selections[v], handle, file_lists[v], channels[v]);
+    }
 
     if changed {
         println!("Audio: file open/seek took {}ms", reconcile_start.elapsed().as_millis());
     }
 
+    let playing = |voice: &Option<Voice>| voice.as_ref().is_some_and(|v| !v.finished);
+
     let mut pos = 0;
     while pos + MAX_FRAME_SAMPLES <= OUT_BUF_LEN {
-        let mut bg = [0f32; MAX_FRAME_SAMPLES];
-        let mut left = [0f32; MAX_FRAME_SAMPLES];
-        let mut right = [0f32; MAX_FRAME_SAMPLES];
+        let mut left_mix = [0f32; MAX_FRAME_SAMPLES];
+        let mut right_mix = [0f32; MAX_FRAME_SAMPLES];
+        let mut samples = [0f32; MAX_FRAME_SAMPLES];
 
-        let bg_produced = match bg_voice {
-            Some(v) => v.produce(&mut bg, MAX_FRAME_SAMPLES, scratch).await,
-            None => 0,
-        };
-        for sample in &mut bg[bg_produced..] {
-            *sample = 0.0;
+        let mut duck = [1.0f32; VOICE_COUNT];
+        if playing(&voices[LEFT_FX]) {
+            duck[LEFT] = FX_DUCK;
         }
-        // Decoding a frame is pure CPU with no await inside unless an SD refill
-        // is due, so three voices' worth back-to-back can hold the thread-mode
-        // executor long enough to starve sibling tasks (neo_task's pixel timing,
-        // oled flush). Yielding between each voice bounds the worst case to one
-        // voice's decode instead of three.
-        yield_now().await;
+        if playing(&voices[RIGHT_FX]) {
+            duck[RIGHT] = FX_DUCK;
+        }
 
-        let left_produced = match left_voice {
-            Some(v) => v.produce(&mut left, MAX_FRAME_SAMPLES, scratch).await,
-            None => 0,
-        };
-        for sample in &mut left[left_produced..] {
-            *sample = 0.0;
-        }
-        yield_now().await;
+        for v in 0..VOICE_COUNT {
+            let Some(voice) = &mut voices[v] else {
+                continue;
+            };
 
-        let right_produced = match right_voice {
-            Some(v) => v.produce(&mut right, MAX_FRAME_SAMPLES, scratch).await,
-            None => 0,
-        };
-        for sample in &mut right[right_produced..] {
-            *sample = 0.0;
+            let before = CpuStats::snapshot();
+            let produced = voice.produce(&mut samples, MAX_FRAME_SAMPLES, scratch).await;
+            stats.charge(v, before);
+
+            let gain = voice.gain * duck[v];
+            let (to_left, to_right) = ROUTING[v];
+            for i in 0..produced {
+                let s = samples[i] * gain;
+                if to_left {
+                    left_mix[i] += s;
+                }
+                if to_right {
+                    right_mix[i] += s;
+                }
+            }
+
+            // Decoding is pure CPU with no await inside unless an SD refill is
+            // due, so several voices back-to-back can hold the thread-mode
+            // executor long enough to starve sibling tasks (neo_task's pixel
+            // timing, oled flush). Yielding between voices bounds the worst case
+            // to one voice's decode.
+            yield_now().await;
         }
-        yield_now().await;
 
         for i in 0..MAX_FRAME_SAMPLES {
-            let left_mixed = left[i] + bg[i];
-            let right_mixed = right[i] + bg[i];
-
-            let left_s16 =
-                (left_mixed.clamp(-1.0, 1.0) * VOLUME * 32767.0) as i32 as i16 as u16;
-            let right_s16 =
-                (right_mixed.clamp(-1.0, 1.0) * VOLUME * 32767.0) as i32 as i16 as u16;
+            // Volume before the clamp, so several voices summed together only
+            // clip if the result is actually out of range.
+            let left_s16 = ((left_mix[i] * VOLUME).clamp(-1.0, 1.0) * 32767.0) as i32 as i16 as u16;
+            let right_s16 = ((right_mix[i] * VOLUME).clamp(-1.0, 1.0) * 32767.0) as i32 as i16 as u16;
             out[pos + i] = ((left_s16 as u32) << 16) | (right_s16 as u32);
         }
 
         pos += MAX_FRAME_SAMPLES;
         yield_now().await;
     }
+
+    stats.maybe_report();
 }
 
 /// Decodes MP3/reads SD and posts filled buffers to `audio_output_task`. Runs
@@ -507,14 +872,11 @@ pub async fn audio_decode_task(cfg: AudioConfig, sd_r: SdResources) {
     // task now owns the only reference to it.
     let handle = sd::init(sd_r);
 
-    let mut bg_voice: Option<Voice> = None;
-    let mut left_voice: Option<Voice> = None;
-    let mut right_voice: Option<Voice> = None;
-    let mut bg_failed_selection: Option<(usize, PlaybackMode)> = None;
-    let mut left_failed_selection: Option<(usize, PlaybackMode)> = None;
-    let mut right_failed_selection: Option<(usize, PlaybackMode)> = None;
+    let mut voices: [Option<Voice>; VOICE_COUNT] = core::array::from_fn(|_| None);
+    let mut failed_selections: [Option<(usize, PlaybackMode)>; VOICE_COUNT] = [None; VOICE_COUNT];
     let mut scratch = [0f32; MAX_SAMPLES_PER_FRAME];
-    let mut last_dmx = [0u8; 3];
+    let mut last_dmx = [0u8; VOICE_COUNT];
+    let mut stats = CpuStats::new();
 
     let buf_a = BUF_A.init([0u32; OUT_BUF_LEN]);
     let buf_b = BUF_B.init([0u32; OUT_BUF_LEN]);
@@ -528,15 +890,12 @@ pub async fn audio_decode_task(cfg: AudioConfig, sd_r: SdResources) {
         fill(
             &cfg,
             handle,
-            &mut bg_voice,
-            &mut left_voice,
-            &mut right_voice,
-            &mut bg_failed_selection,
-            &mut left_failed_selection,
-            &mut right_failed_selection,
+            &mut voices,
+            &mut failed_selections,
             &mut scratch,
             buf,
             &mut last_dmx,
+            &mut stats,
         )
         .await;
         FILLED_CHANNEL.send(buf).await;

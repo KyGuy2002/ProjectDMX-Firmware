@@ -6,9 +6,10 @@
 //! remote press (buttons 'A'..='D'), and `on_fpp_online` whenever FPP comes
 //! online. Any of them can change the state.
 //!
-//! The FPP helpers queue a command and return straight away; commands are sent
-//! to FPP in the order they were called. Names are the file name without
-//! `.fseq`.
+//! The FPP helpers queue a command and return straight away. Commands queued
+//! together (in one handler) are sent to FPP at the same time, so they start
+//! together; put an `fpp::wait` between two to keep them in order. Names are
+//! the file name without `.fseq`.
 //!
 //!   fpp::start_sequence(name, looping)   play a sequence (replaces the current one)
 //!   fpp::stop_sequence()                 stop the playing sequence
@@ -81,13 +82,17 @@ pub fn on_button_pressed(button: u8, state: &mut State) {
             }
         }
 
-        // Overload, by a guest or by button 1's timer. The startup effect is
-        // left running if it still is.
+        // Overload, by a guest or by button 1's timer. All four go to FPP at
+        // once, so the overload sequence (and its audio) starts with the
+        // strike and is already running underneath when the strike ends.
+        // Startup is stopped in case this came early: left running, it would
+        // hold the Bones/Frank audio channels and show through after strike.
         2 => {
             if *state == State::Running {
                 fpp::start_effect(STRIKE, false);
-                fpp::start_effect(OVERLOAD_FX, false);
                 fpp::start_sequence(OVERLOAD, true);
+                fpp::stop_effect(STARTUP);
+                fpp::start_effect(OVERLOAD_FX, false);
                 *state = State::Overload;
             }
         }

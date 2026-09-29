@@ -15,6 +15,8 @@ use embedded_sdmmc::{
     VolumeManager,
 };
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use static_cell::StaticCell;
 
 use crate::hardware::SdResources;
@@ -105,10 +107,20 @@ pub fn open_file(handle: SdHandle, name: &str, mode: Mode) -> Result<SdFile<'sta
         Some(short_name) => handle
             .mgr
             .open_file_in_dir(handle.root_dir, short_name, mode)?,
-        None => handle.mgr.open_file_in_dir(handle.root_dir, name, mode)?,
+        // No long name matched: try it as an 8.3 name. A name that can't be one
+        // (too long, etc.) just wasn't found - say that rather than reporting
+        // e.g. NameTooLong.
+        None => match handle.mgr.open_file_in_dir(handle.root_dir, name, mode) {
+            Err(Error::FilenameError(_)) => return Err(Error::NotFound),
+            result => result?,
+        },
     };
     Ok(raw_file.to_file(handle.mgr))
 }
+
+/// Running total of microseconds spent inside blocking SD sector reads, for the
+/// audio CPU log. Wraps; readers diff two snapshots.
+pub static SD_READ_US: AtomicU32 = AtomicU32::new(0);
 
 /// Reads into `buffer` one 512-byte SD sector at a time, yielding to the
 /// executor after every sector. `embedded-sdmmc`'s read is synchronous and a
@@ -132,7 +144,9 @@ pub async fn read_yielding(
     let mut total_read = 0;
 
     for chunk in buffer.chunks_mut(512) {
+        let read_start = Instant::now();
         let n = file.read(chunk)?;
+        SD_READ_US.fetch_add(read_start.elapsed().as_micros() as u32, Ordering::Relaxed);
         total_read += n;
 
         embassy_futures::yield_now().await;

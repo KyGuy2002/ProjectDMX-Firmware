@@ -75,6 +75,14 @@ lto = false
 overflow-checks = true
 debug-assertions = true
 
+# MP3 decoding is the audio pipeline's hot loop; build it for speed even though
+# the rest of the firmware is optimized for size.
+[profile.dev.package.nanomp3]
+opt-level = 3
+
+[profile.release.package.nanomp3]
+opt-level = 3
+
 [profile.release]
 opt-level = "z"
 debug = 0

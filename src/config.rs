@@ -71,8 +71,20 @@ fn validate(config: &BoardInstanceConfig) -> Result<(), ConfigError> {
     if !(1..=512).contains(&config.audio.start_channel) {
         return Err(ConfigError::Invalid("audio start_channel out of range (expected 1..=512)"));
     }
-    if config.audio.start_channel > 510 {
-        return Err(ConfigError::Invalid("audio right channel is out of range (expected start_channel <= 510)"));
+    if config.audio.start_channel > 508 {
+        return Err(ConfigError::Invalid("audio right FX channel is out of range (expected start_channel <= 508)"));
+    }
+    let audio_lists = [
+        &config.audio.bg_files,
+        &config.audio.left_files,
+        &config.audio.right_files,
+        &config.audio.left_fx_files,
+        &config.audio.right_fx_files,
+    ];
+    for list in audio_lists {
+        if list.iter().any(|f| f.volume > 100) {
+            return Err(ConfigError::Invalid("audio file volume out of range (expected 0..=100)"));
+        }
     }
 
     for mode in &config.modes {
@@ -280,13 +292,33 @@ pub struct DmxOutputConfig {
 // AUDIO (DMX-TRIGGERED MP3 PLAYBACK)
 // =========================================================================
 
+/// DMX channels, in order from `start_channel`: bg (both speakers), left,
+/// right, left FX, right FX. The FX channels play on top of their side's track
+/// so a jumpscare doesn't interrupt (and desync) it.
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 pub struct AudioConfig {
     pub universe: u16,
     pub start_channel: u16,
-    pub bg_files: Vec<String<MAX_FILENAME_LEN>, MAX_AUDIO_FILES>,
-    pub left_files: Vec<String<MAX_FILENAME_LEN>, MAX_AUDIO_FILES>,
-    pub right_files: Vec<String<MAX_FILENAME_LEN>, MAX_AUDIO_FILES>,
+    pub bg_files: Vec<AudioFile, MAX_AUDIO_FILES>,
+    pub left_files: Vec<AudioFile, MAX_AUDIO_FILES>,
+    pub right_files: Vec<AudioFile, MAX_AUDIO_FILES>,
+    #[serde(default)]
+    pub left_fx_files: Vec<AudioFile, MAX_AUDIO_FILES>,
+    #[serde(default)]
+    pub right_fx_files: Vec<AudioFile, MAX_AUDIO_FILES>,
+}
+
+/// One selectable audio file: `.mp3`, or mono IMA ADPCM `.wav`.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+pub struct AudioFile {
+    pub file: String<MAX_FILENAME_LEN>,
+    /// 0..=100 %, applied on top of the global volume.
+    #[serde(default = "full_volume")]
+    pub volume: u8,
+}
+
+fn full_volume() -> u8 {
+    100
 }
 
 // =========================================================================
