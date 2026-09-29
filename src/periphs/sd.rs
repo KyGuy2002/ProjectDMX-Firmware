@@ -89,8 +89,24 @@ pub fn init(r: SdResources) -> SdHandle {
     SdHandle { mgr, root_dir }
 }
 
-/// Opens `name` in the SD card's root directory, read-only.
+/// Opens `name` in the SD card's root directory.
+#[allow(dead_code)] // general-purpose; audio uses short_name + open_short
 pub fn open_file(handle: SdHandle, name: &str, mode: Mode) -> Result<SdFile<'static>, SdError> {
+    let short = short_name(handle, name)?;
+    open_short(handle, &short, mode)
+}
+
+/// Opens a file by the 8.3 name from `short_name`. Skips the long-name scan
+/// `open_file` does, so a file that's opened over and over (audio) only pays
+/// for that scan once.
+pub fn open_short(handle: SdHandle, name: &ShortFileName, mode: Mode) -> Result<SdFile<'static>, SdError> {
+    let raw_file = handle.mgr.open_file_in_dir(handle.root_dir, name.clone(), mode)?;
+    Ok(raw_file.to_file(handle.mgr))
+}
+
+/// Resolves `name` (a long name, or already 8.3) in the root directory to the
+/// 8.3 name `open_short` takes. Doesn't check that an 8.3 name exists.
+pub fn short_name(handle: SdHandle, name: &str) -> Result<ShortFileName, SdError> {
     let mut lfn_storage = [0u8; 256];
     let mut lfn_buffer = LfnBuffer::new(&mut lfn_storage);
     let mut short_name: Option<ShortFileName> = None;
@@ -103,19 +119,13 @@ pub fn open_file(handle: SdHandle, name: &str, mode: Mode) -> Result<SdFile<'sta
             }
         })?;
 
-    let raw_file = match short_name {
-        Some(short_name) => handle
-            .mgr
-            .open_file_in_dir(handle.root_dir, short_name, mode)?,
+    match short_name {
+        Some(short_name) => Ok(short_name),
         // No long name matched: try it as an 8.3 name. A name that can't be one
         // (too long, etc.) just wasn't found - say that rather than reporting
         // e.g. NameTooLong.
-        None => match handle.mgr.open_file_in_dir(handle.root_dir, name, mode) {
-            Err(Error::FilenameError(_)) => return Err(Error::NotFound),
-            result => result?,
-        },
-    };
-    Ok(raw_file.to_file(handle.mgr))
+        None => ShortFileName::create_from_str(name).map_err(|_| Error::NotFound),
+    }
 }
 
 /// Running total of microseconds spent inside blocking SD sector reads, for the

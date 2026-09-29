@@ -9,11 +9,11 @@ use embassy_rp::pio_programs::i2s::{PioI2sOut, PioI2sOutProgram};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::Instant;
-use embedded_sdmmc::Mode;
+use embedded_sdmmc::{Mode, ShortFileName};
 use nanomp3::{Decoder, MAX_SAMPLES_PER_FRAME};
 use static_cell::StaticCell;
 
-use crate::config::{AudioConfig, AudioFile};
+use crate::config::{AudioConfig, AudioFile, MAX_AUDIO_FILES};
 use crate::hardware::{AudioIrqs, AudioResources, SdResources};
 use crate::periphs::sd::{self, SdFile, SdHandle};
 use crate::read_channels;
@@ -23,7 +23,7 @@ const AUDIO_SAMPLE_RATE: u32 = 44100;
 
 // Playback volume, 0.0 - 1.0. Tweak here. Each file's config `volume` scales
 // on top of this.
-const VOLUME: f32 = 0.6;
+const VOLUME: f32 = 0.9;
 
 // DMX audio channels, in channel order from `start_channel`: background (both
 // speakers), left (Bones), right (Frank), left FX, right FX. The FX voices play
@@ -398,6 +398,76 @@ fn is_wav(filename: &str) -> bool {
     bytes.len() >= 4 && bytes[bytes.len() - 4..].eq_ignore_ascii_case(b".wav")
 }
 
+/// What `Voice::start` needs to know about a file, worked out once at boot:
+/// its 8.3 name and where its audio starts. Opening a file then costs one
+/// directory lookup and a seek, instead of a long-name scan of the whole root
+/// directory plus header reads - with several tracks starting on the same DMX
+/// change, that difference was enough to underrun the output.
+#[derive(Clone)]
+struct Prepared {
+    short: ShortFileName,
+    data_start: u32,
+    kind: PreparedKind,
+}
+
+#[derive(Clone, Copy)]
+enum PreparedKind {
+    Mp3,
+    Adpcm { block_align: usize, data_len: u32 },
+}
+
+/// Resolves and checks one configured file. `None` (with a log line) if it's
+/// missing or can't be played.
+fn prepare(handle: SdHandle, audio_file: &AudioFile) -> Option<Prepared> {
+    let filename = audio_file.file.as_str();
+
+    let short = match sd::short_name(handle, filename) {
+        Ok(short) => short,
+        Err(error) => {
+            println!("Audio: {} not usable: {:?}", filename, defmt::Debug2Format(&error));
+            return None;
+        }
+    };
+    let mut file = match sd::open_short(handle, &short, Mode::ReadOnly) {
+        Ok(f) => f,
+        Err(error) => {
+            println!("Audio: failed to open {}: {:?}", filename, defmt::Debug2Format(&error));
+            return None;
+        }
+    };
+
+    if is_wav(filename) {
+        let info = match parse_ima_wav(&mut file) {
+            Ok(info) => info,
+            Err(reason) => {
+                println!("Audio: can't play {}: {}", filename, reason);
+                return None;
+            }
+        };
+        if info.sample_rate != AUDIO_SAMPLE_RATE {
+            println!(
+                "Audio: {} is {} Hz, expected {} Hz - will play at the wrong speed",
+                filename,
+                info.sample_rate,
+                AUDIO_SAMPLE_RATE
+            );
+        }
+        Some(Prepared {
+            short,
+            data_start: info.data_start,
+            kind: PreparedKind::Adpcm { block_align: info.block_align, data_len: info.data_len },
+        })
+    } else {
+        Some(Prepared { short, data_start: id3v2_data_start(&mut file), kind: PreparedKind::Mp3 })
+    }
+}
+
+type PreparedList = heapless::Vec<Option<Prepared>, MAX_AUDIO_FILES>;
+
+fn prepare_list(handle: SdHandle, files: &[AudioFile]) -> PreparedList {
+    files.iter().map(|f| prepare(handle, f)).collect()
+}
+
 struct Voice {
     file_index: usize,
     mode: PlaybackMode,
@@ -436,47 +506,35 @@ impl Voice {
         file_index: usize,
         mode: PlaybackMode,
         audio_file: &AudioFile,
+        prepared: &Prepared,
     ) -> Option<Voice> {
-        let filename = audio_file.file.as_str();
-        let mut file = match sd::open_file(handle, filename, Mode::ReadOnly) {
+        let file = match sd::open_short(handle, &prepared.short, Mode::ReadOnly) {
             Ok(f) => f,
             Err(error) => {
                 println!(
                     "Audio: failed to open {}: {:?}",
-                    filename,
+                    audio_file.file.as_str(),
                     defmt::Debug2Format(&error)
                 );
                 return None;
             }
         };
 
-        let (data_start, codec, rate_checked) = if is_wav(filename) {
-            let info = match parse_ima_wav(&mut file) {
-                Ok(info) => info,
-                Err(reason) => {
-                    println!("Audio: can't play {}: {}", filename, reason);
-                    return None;
-                }
-            };
-            if info.sample_rate != AUDIO_SAMPLE_RATE {
-                println!(
-                    "Audio: {} is {} Hz, expected {} Hz - will play at the wrong speed",
-                    filename,
-                    info.sample_rate,
-                    AUDIO_SAMPLE_RATE
-                );
+        let data_start = prepared.data_start;
+        let (codec, rate_checked) = match prepared.kind {
+            PreparedKind::Adpcm { block_align, data_len } => {
+                let adpcm = Adpcm {
+                    block_align,
+                    data_len,
+                    data_left: data_len,
+                    block_left: 0,
+                    predictor: 0,
+                    step_index: 0,
+                };
+                // Rate already checked (and warned about) in prepare().
+                (Codec::Adpcm(adpcm), true)
             }
-            let adpcm = Adpcm {
-                block_align: info.block_align,
-                data_len: info.data_len,
-                data_left: info.data_len,
-                block_left: 0,
-                predictor: 0,
-                step_index: 0,
-            };
-            (info.data_start, Codec::Adpcm(adpcm), true)
-        } else {
-            (id3v2_data_start(&mut file), Codec::Mp3(Decoder::new()), false)
+            PreparedKind::Mp3 => (Codec::Mp3(Decoder::new()), false),
         };
 
         if file.seek_from_start(data_start).is_err() {
@@ -726,6 +784,7 @@ fn reconcile(
     failed_selection: &mut Option<(usize, PlaybackMode)>,
     handle: SdHandle,
     files: &[AudioFile],
+    prepared: &[Option<Prepared>],
     dmx: u8,
 ) {
     match decode_value(dmx, files.len()) {
@@ -742,7 +801,10 @@ fn reconcile(
                 *failed_selection = None;
             } else if *failed_selection != Some((idx, mode)) {
                 let _ = voice.take();
-                *voice = Voice::start(handle, idx, mode, &files[idx]);
+                // A file that failed prepare() at boot was already logged.
+                *voice = prepared[idx]
+                    .as_ref()
+                    .and_then(|p| Voice::start(handle, idx, mode, &files[idx], p));
                 *failed_selection = voice.is_none().then_some((idx, mode));
             }
         }
@@ -755,6 +817,7 @@ fn reconcile(
 async fn fill(
     cfg: &AudioConfig,
     handle: SdHandle,
+    prepared: &[PreparedList; VOICE_COUNT],
     voices: &mut [Option<Voice>; VOICE_COUNT],
     failed_selections: &mut [Option<(usize, PlaybackMode)>; VOICE_COUNT],
     scratch: &mut [f32; MAX_SAMPLES_PER_FRAME],
@@ -791,7 +854,7 @@ async fn fill(
         &cfg.right_fx_files,
     ];
     for v in 0..VOICE_COUNT {
-        reconcile(&mut voices[v], &mut failed_selections[v], handle, file_lists[v], channels[v]);
+        reconcile(&mut voices[v], &mut failed_selections[v], handle, file_lists[v], &prepared[v], channels[v]);
     }
 
     if changed {
@@ -872,6 +935,14 @@ pub async fn audio_decode_task(cfg: AudioConfig, sd_r: SdResources) {
     // task now owns the only reference to it.
     let handle = sd::init(sd_r);
 
+    let prepared: [PreparedList; VOICE_COUNT] = [
+        prepare_list(handle, &cfg.bg_files),
+        prepare_list(handle, &cfg.left_files),
+        prepare_list(handle, &cfg.right_files),
+        prepare_list(handle, &cfg.left_fx_files),
+        prepare_list(handle, &cfg.right_fx_files),
+    ];
+
     let mut voices: [Option<Voice>; VOICE_COUNT] = core::array::from_fn(|_| None);
     let mut failed_selections: [Option<(usize, PlaybackMode)>; VOICE_COUNT] = [None; VOICE_COUNT];
     let mut scratch = [0f32; MAX_SAMPLES_PER_FRAME];
@@ -890,6 +961,7 @@ pub async fn audio_decode_task(cfg: AudioConfig, sd_r: SdResources) {
         fill(
             &cfg,
             handle,
+            &prepared,
             &mut voices,
             &mut failed_selections,
             &mut scratch,
