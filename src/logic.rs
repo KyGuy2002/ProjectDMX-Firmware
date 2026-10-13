@@ -40,7 +40,7 @@ const OVERLOAD: &str = "overload-2026";
 
 // Effects
 /// Guests should hit button 2 before this runs out; if not, strike anyway.
-const STARTUP_MS: u64 = 7500;
+const STARTUP_MS: u64 = 3500;
 const STARTUP: &str = "startup-2026-e";
 const STRIKE: &str = "strike-2026-e";
 /// Plays once alongside the looping overload sequence.
